@@ -2,7 +2,7 @@
 # Modify this file to customize image name and tags
 
 # Image name (owner prefix is auto-added, just write the image name)
-image_name: clawfeed
+image_name: hello-world
 
 # Tags (comma-separated, will be applied to the multi-arch manifest)
 tags: latest,v1.0.0
