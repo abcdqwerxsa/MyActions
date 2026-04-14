@@ -1,0 +1,8 @@
+# Image build configuration
+# Modify this file to customize image name and tags
+
+# Image name (format: owner/repository or any name under your GHCR namespace)
+image_name: abcdqwerxsa/myactions
+
+# Tags (comma-separated, will be applied to the multi-arch manifest)
+tags: latest,v1.0.0

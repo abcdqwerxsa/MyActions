@@ -4,13 +4,83 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dockerfile_url:
+        description: "Dockerfile URL (leave empty to use repo Dockerfile)"
+        required: false
+        type: string
+      config_file:
+        description: "Config YAML path (relative to repo root, e.g. image-config.yaml)"
+        required: false
+        default: "image-config.yaml"
+        type: string
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      image_name: ${{ steps.config.outputs.image_name }}
+      tags: ${{ steps.config.outputs.tags }}
+      dockerfile_source: ${{ steps.config.outputs.dockerfile_source }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse image config
+        id: config
+        run: |
+          CONFIG_FILE="${{ inputs.config_file || 'image-config.yaml' }}"
+
+          # Default values
+          IMAGE_NAME="${{ github.repository }}"
+          TAGS="latest,${{ github.sha }}"
+          DOCKERFILE_SOURCE="repo"
+
+          # Override from config file if exists
+          if [ -f "$CONFIG_FILE" ]; then
+            echo ">>> Found config file: $CONFIG_FILE"
+            # Parse image_name
+            VAL=$(grep -E '^image_name:' "$CONFIG_FILE" | head -1 | sed 's/^image_name:[[:space:]]*//' | tr -d '"' | tr -d "'")
+            [ -n "$VAL" ] && IMAGE_NAME="$VAL"
+
+            # Parse tags (comma-separated)
+            VAL=$(grep -E '^tags:' "$CONFIG_FILE" | head -1 | sed 's/^tags:[[:space:]]*//' | tr -d '"' | tr -d "'")
+            [ -n "$VAL" ] && TAGS="$VAL"
+
+            echo ">>> Config: image_name=$IMAGE_NAME, tags=$TAGS"
+          else
+            echo ">>> No config file found, using defaults"
+          fi
+
+          # Check if Dockerfile URL is provided via workflow_dispatch
+          if [ -n "${{ inputs.dockerfile_url }}" ]; then
+            DOCKERFILE_SOURCE="url"
+            echo ">>> Using Dockerfile from URL: ${{ inputs.dockerfile_url }}"
+          fi
+
+          # Build tag list for docker/metadata-action format
+          TAG_LIST=""
+          IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
+          for tag in "${TAG_ARRAY[@]}"; do
+            tag=$(echo "$tag" | xargs)
+            TAG_LIST="${TAG_LIST}${REGISTRY}/${IMAGE_NAME}:${tag}\n"
+          done
+          TAG_LIST=$(echo -e "$TAG_LIST" | sed '/^$/d')
+
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$TAG_LIST" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "dockerfile_source=$DOCKERFILE_SOURCE" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -29,6 +99,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download Dockerfile from URL
+        if: needs.prepare.outputs.dockerfile_source == 'url'
+        run: |
+          curl -fsSL "${{ inputs.dockerfile_url }}" -o Dockerfile
+          echo ">>> Downloaded Dockerfile from URL"
+          head -5 Dockerfile
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -45,14 +122,14 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-${{ matrix.suffix }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ matrix.suffix }}
+            ${{ needs.prepare.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_name }}:${{ github.sha }}-${{ matrix.suffix }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
 
   merge:
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [prepare, build]
     permissions:
       contents: read
       packages: write
@@ -70,12 +147,31 @@ jobs:
 
       - name: Create multi-arch manifest and push
         run: |
+          IMAGE="${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
+
+          # Collect arch-specific digest tags
+          SOURCES=""
+          for suffix in amd64 arm64; do
+            TAG="${IMAGE}:${{ github.sha }}-${suffix}"
+            echo ">>> Adding: $TAG"
+            SOURCES="$SOURCES $TAG"
+          done
+
+          # Parse user tags and create manifest
+          IFS=',' read -ra TAG_ARRAY <<< "$(echo '${{ needs.prepare.outputs.tags }}' | tr '\n' ',')"
+          MANIFEST_TAGS=""
+          for tag_line in "${TAG_ARRAY[@]}"; do
+            tag_line=$(echo "$tag_line" | xargs | sed "s|${IMAGE}:||")
+            [ -z "$tag_line" ] && continue
+            MANIFEST_TAGS="$MANIFEST_TAGS -t ${IMAGE}:${tag_line}"
+          done
+
+          echo ">>> Creating manifest with tags: $MANIFEST_TAGS"
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-arm64
+            $MANIFEST_TAGS \
+            $SOURCES
 
       - name: Inspect multi-arch image
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          IMAGE="${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
+          docker buildx imagetools inspect "${IMAGE}:latest"
