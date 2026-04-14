@@ -194,6 +194,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [prepare, merge]
     if: inputs.push_aliyun == true
+    permissions:
+      packages: read
     steps:
       - name: Install regctl
         run: |
@@ -224,6 +226,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [prepare, merge]
     if: inputs.push_huawei == true
+    permissions:
+      packages: read
     steps:
       - name: Install regctl
         run: |
@@ -253,6 +257,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [prepare, merge]
     if: inputs.push_tencent == true
+    permissions:
+      packages: read
     steps:
       - name: Install regctl
         run: |
