@@ -47,7 +47,14 @@ jobs:
             echo ">>> Found config file: $CONFIG_FILE"
             # Parse image_name
             VAL=$(grep -E '^image_name:' "$CONFIG_FILE" | head -1 | sed 's/^image_name:[[:space:]]*//' | tr -d '"' | tr -d "'")
-            [ -n "$VAL" ] && IMAGE_NAME="$VAL"
+            if [ -n "$VAL" ]; then
+              # Auto prepend owner if not a full path
+              if echo "$VAL" | grep -qv '/'; then
+                IMAGE_NAME="${{ github.repository_owner }}/${VAL}"
+              else
+                IMAGE_NAME="$VAL"
+              fi
+            fi
 
             # Parse tags (comma-separated)
             VAL=$(grep -E '^tags:' "$CONFIG_FILE" | head -1 | sed 's/^tags:[[:space:]]*//' | tr -d '"' | tr -d "'")
