@@ -197,29 +197,33 @@ jobs:
     permissions:
       packages: read
     steps:
-      - name: Install regctl
-        run: |
-          curl -fsSL "https://github.com/regclient/regclient/releases/latest/download/regctl-linux-amd64" \
-            -o /usr/local/bin/regctl && chmod +x /usr/local/bin/regctl
+      - name: Login to GHCR (source)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login registries
-        run: |
-          regctl registry login "${{ env.GHCR_REGISTRY }}" \
-            -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
-          regctl registry login "${{ secrets.ALIYUN_REGISTRY }}" \
-            -u "${{ secrets.ALIYUN_REGISTRY_USERNAME }}" -p "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+      - name: Login to Aliyun ACR (target)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALIYUN_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
 
       - name: Sync to Aliyun ACR
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
           DST="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
-          IFS=',' read -ra TAG_ARRAY <<< "$(echo '${{ needs.prepare.outputs.tags }}' | sed 's|.*/||;s|.*:||' | tr '\n' ',')"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
             [ -z "$tag_line" ] && continue
             echo ">>> Copying tag: $tag_line"
-            regctl image copy "${SRC}:${tag_line}" "${DST}:${tag_line}"
+            skopeo copy --all "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
           done
 
   sync-huawei:
@@ -229,17 +233,22 @@ jobs:
     permissions:
       packages: read
     steps:
-      - name: Install regctl
-        run: |
-          curl -fsSL "https://github.com/regclient/regclient/releases/latest/download/regctl-linux-amd64" \
-            -o /usr/local/bin/regctl && chmod +x /usr/local/bin/regctl
+      - name: Login to GHCR (source)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login registries
-        run: |
-          regctl registry login "${{ env.GHCR_REGISTRY }}" \
-            -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
-          regctl registry login "${{ secrets.HUAWEI_REGISTRY }}" \
-            -u "${{ secrets.HUAWEI_REGISTRY_USERNAME }}" -p "${{ secrets.HUAWEI_REGISTRY_PASSWORD }}"
+      - name: Login to Huawei SWR (target)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HUAWEI_REGISTRY }}
+          username: ${{ secrets.HUAWEI_REGISTRY_USERNAME }}
+          password: ${{ secrets.HUAWEI_REGISTRY_PASSWORD }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
 
       - name: Sync to Huawei SWR
         run: |
@@ -250,7 +259,7 @@ jobs:
             tag_line=$(echo "$tag_line" | xargs)
             [ -z "$tag_line" ] && continue
             echo ">>> Copying tag: $tag_line"
-            regctl image copy "${SRC}:${tag_line}" "${DST}:${tag_line}"
+            skopeo copy --all "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
           done
 
   sync-tencent:
@@ -260,17 +269,22 @@ jobs:
     permissions:
       packages: read
     steps:
-      - name: Install regctl
-        run: |
-          curl -fsSL "https://github.com/regclient/regclient/releases/latest/download/regctl-linux-amd64" \
-            -o /usr/local/bin/regctl && chmod +x /usr/local/bin/regctl
+      - name: Login to GHCR (source)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login registries
-        run: |
-          regctl registry login "${{ env.GHCR_REGISTRY }}" \
-            -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
-          regctl registry login "${{ secrets.TENCENT_REGISTRY }}" \
-            -u "${{ secrets.TENCENT_REGISTRY_USERNAME }}" -p "${{ secrets.TENCENT_REGISTRY_PASSWORD }}"
+      - name: Login to Tencent CNB (target)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.TENCENT_REGISTRY }}
+          username: ${{ secrets.TENCENT_REGISTRY_USERNAME }}
+          password: ${{ secrets.TENCENT_REGISTRY_PASSWORD }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
 
       - name: Sync to Tencent CNB
         run: |
@@ -281,7 +295,7 @@ jobs:
             tag_line=$(echo "$tag_line" | xargs)
             [ -z "$tag_line" ] && continue
             echo ">>> Copying tag: $tag_line"
-            regctl image copy "${SRC}:${tag_line}" "${DST}:${tag_line}"
+            skopeo copy --all "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
           done
 
   cleanup-ghcr:
