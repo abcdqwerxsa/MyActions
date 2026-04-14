@@ -5,4 +5,4 @@
 image_name: clusterd
 
 # Tags (comma-separated, will be applied to the multi-arch manifest)
-tags: 7.2.RC1
+tags: latest,7.2.RC1
