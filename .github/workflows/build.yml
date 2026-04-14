@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       image_name: ${{ steps.config.outputs.image_name }}
+      short_image_name: ${{ steps.config.outputs.short_image_name }}
       tags: ${{ steps.config.outputs.tags }}
       dockerfile_source: ${{ steps.config.outputs.dockerfile_source }}
     permissions:
@@ -88,6 +89,8 @@ jobs:
           TAG_LIST=$(echo -e "$TAG_LIST" | sed '/^$/d')
 
           echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          # Short name: strip owner prefix for non-GHCR registries
+          echo "short_image_name=${IMAGE_NAME##*/}" >> "$GITHUB_OUTPUT"
           echo "tags<<EOF" >> "$GITHUB_OUTPUT"
           echo -e "$TAG_LIST" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -217,7 +220,7 @@ jobs:
       - name: Sync to Aliyun ACR
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          DST="${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
+          DST="${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAMESPACE }}/${{ needs.prepare.outputs.short_image_name }}"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
@@ -253,7 +256,7 @@ jobs:
       - name: Sync to Huawei SWR
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          DST="${{ vars.HUAWEI_REGISTRY }}/${{ vars.HUAWEI_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
+          DST="${{ vars.HUAWEI_REGISTRY }}/${{ vars.HUAWEI_NAMESPACE }}/${{ needs.prepare.outputs.short_image_name }}"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
@@ -289,7 +292,7 @@ jobs:
       - name: Sync to Tencent CNB
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          DST="${{ vars.TENCENT_REGISTRY }}/${{ vars.TENCENT_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
+          DST="${{ vars.TENCENT_REGISTRY }}/${{ vars.TENCENT_NAMESPACE }}/${{ needs.prepare.outputs.short_image_name }}"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
