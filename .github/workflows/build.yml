@@ -207,8 +207,8 @@ jobs:
       - name: Login to Aliyun ACR (target)
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.ALIYUN_REGISTRY }}
-          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          registry: ${{ vars.ALIYUN_REGISTRY }}
+          username: ${{ vars.ALIYUN_REGISTRY_USERNAME }}
           password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
       - name: Install skopeo
@@ -217,7 +217,7 @@ jobs:
       - name: Sync to Aliyun ACR
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          DST="${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
+          DST="${{ vars.ALIYUN_REGISTRY }}/${{ vars.ALIYUN_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
@@ -243,8 +243,8 @@ jobs:
       - name: Login to Huawei SWR (target)
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.HUAWEI_REGISTRY }}
-          username: ${{ secrets.HUAWEI_REGISTRY_USERNAME }}
+          registry: ${{ vars.HUAWEI_REGISTRY }}
+          username: ${{ vars.HUAWEI_REGISTRY_USERNAME }}
           password: ${{ secrets.HUAWEI_REGISTRY_PASSWORD }}
 
       - name: Install skopeo
@@ -253,7 +253,7 @@ jobs:
       - name: Sync to Huawei SWR
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          DST="${{ secrets.HUAWEI_REGISTRY }}/${{ secrets.HUAWEI_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
+          DST="${{ vars.HUAWEI_REGISTRY }}/${{ vars.HUAWEI_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
@@ -279,8 +279,8 @@ jobs:
       - name: Login to Tencent CNB (target)
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.TENCENT_REGISTRY }}
-          username: ${{ secrets.TENCENT_REGISTRY_USERNAME }}
+          registry: ${{ vars.TENCENT_REGISTRY }}
+          username: ${{ vars.TENCENT_REGISTRY_USERNAME }}
           password: ${{ secrets.TENCENT_REGISTRY_PASSWORD }}
 
       - name: Install skopeo
@@ -289,7 +289,7 @@ jobs:
       - name: Sync to Tencent CNB
         run: |
           SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          DST="${{ secrets.TENCENT_REGISTRY }}/${{ secrets.TENCENT_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
+          DST="${{ vars.TENCENT_REGISTRY }}/${{ vars.TENCENT_NAMESPACE }}/${{ needs.prepare.outputs.image_name }}"
           echo ">>> Syncing $SRC -> $DST"
           for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
             tag_line=$(echo "$tag_line" | xargs)
