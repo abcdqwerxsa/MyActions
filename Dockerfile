@@ -1,23 +1,27 @@
-FROM ubuntu:22.04
+# SSH Bastion for K8s Tenant Platform
+# Proxies SSH connections from users to their development environment containers
 
-RUN useradd -d /home/hwMindX -u 9000 -m -s /usr/sbin/nologin hwMindX &&\
-    usermod root -s /usr/sbin/nologin
+FROM golang:1.24-alpine AS builder
 
-COPY ./clusterd /usr/local/bin
-COPY ./relationFaultCustomization.json /home/hwMindX/relationFaultCustomization.json
-COPY ./faultDuration.json /home/hwMindX/faultDuration.json
-COPY ./publicFaultConfiguration.json /home/hwMindX/publicFaultConfiguration.json
-COPY ./fdConfig.yaml /home/hwMindX/fdConfig.yaml
+WORKDIR /app
 
-RUN chown -R hwMindX:hwMindX /home/hwMindX &&\
-    chmod 555 /usr/local/bin/clusterd &&\
-    chmod 750 /home/hwMindX &&\
-    chmod 440 /home/hwMindX/relationFaultCustomization.json &&\
-    chmod 440 /home/hwMindX/faultDuration.json &&\
-    chmod 440 /home/hwMindX/publicFaultConfiguration.json &&\
-    chmod 440 /home/hwMindX/fdConfig.yaml &&\
-    echo 'umask 027' >> /etc/profile &&\
-    echo 'source /etc/profile' >> /home/hwMindX/.bashrc
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
 
-# hwMindX is used as the default user of the container
-USER hwMindX
+# Copy source code
+COPY . .
+
+# Build the bastion binary
+RUN CGO_ENABLED=0 GOOS=linux go build -o /ssh-bastion ./cmd/ssh-bastion
+
+# Final image
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /ssh-bastion /usr/local/bin/ssh-bastion
+
+EXPOSE 2222
+
+ENTRYPOINT ["ssh-bastion"]
