@@ -17,7 +17,6 @@ ENV PYTHONUNBUFFERED=1 \
 RUN set -e; \
     ARCH=$(uname -m); \
     REPO_URL="http://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/${ARCH}/Packages"; \
-    # Fix python3-dnf if needed
     if command -v rpm >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then \
         mkdir -p /tmp/rpm-packages && cd /tmp/rpm-packages && \
         curl -fsSL -O "${REPO_URL}/python3-dnf-4.14.0-15.oe2203sp4.${ARCH}.rpm" 2>/dev/null || \
@@ -27,7 +26,6 @@ RUN set -e; \
         fi; \
         rm -rf /tmp/rpm-packages; \
     fi; \
-    # Configure repos
     REPO_DIR="/etc/yum.repos.d"; \
     mkdir -p "$REPO_DIR"; \
     printf '[OS]\nname=OS\nbaseurl=http://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/$basearch/\nenabled=1\ngpgcheck=0\n\n' > "$REPO_DIR/openEuler.repo" && \
@@ -38,7 +36,6 @@ RUN set -e; \
 
 # Install system dependencies and configure SSH server in single layer
 RUN set -e; \
-    # Install system packages
     if dnf --version >/dev/null 2>&1; then \
         dnf clean all && dnf makecache && \
         dnf install -y --setopt=install_weak_deps=False \
@@ -56,53 +53,13 @@ RUN set -e; \
     rm -rf /var/cache/dnf /var/cache/yum /var/log /tmp/*; \
     buildah --version
 
-# Configure SSH server
+# Configure SSH server: create dirs, set root home, write sshd_config, generate host keys
 RUN set -e; \
-    # Create required directories
     mkdir -p /run/sshd /root/.ssh /models; \
-    # Set root home to /models
     usermod -d /models root; \
-    # Set permissions
     chmod 700 /root/.ssh; \
-    # Write sshd configuration
-    cat > /etc/ssh/sshd_config << 'SSHD_CONFIG'
-# SSH Server Configuration for Development Environment
-Port 22
-AddressFamily any
-ListenAddress 0.0.0.0
-
-# Host Keys (auto-generated at startup)
-HostKey /etc/ssh/ssh_host_rsa_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-HostKey /etc/ssh/ssh_host_ed25519_key
-
-# Authentication
-PermitRootLogin yes
-PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys
-PasswordAuthentication no
-ChallengeResponseAuthentication no
-UsePAM yes
-
-# Security
-X11Forwarding yes
-PrintMotd no
-AcceptEnv LANG LC_*
-MaxAuthTries 6
-LoginGraceTime 60
-
-# KeepAlive (prevent idle disconnects)
-ClientAliveInterval 30
-ClientAliveCountMax 3
-
-# Performance
-TCPKeepAlive yes
-Compression no
-MaxSessions 10
-SSHD_CONFIG
-
-# Generate initial host keys
-ssh-keygen -A
+    printf 'Port 22\nAddressFamily any\nListenAddress 0.0.0.0\n\nHostKey /etc/ssh/ssh_host_rsa_key\nHostKey /etc/ssh/ssh_host_ecdsa_key\nHostKey /etc/ssh/ssh_host_ed25519_key\n\nPermitRootLogin yes\nPubkeyAuthentication yes\nAuthorizedKeysFile .ssh/authorized_keys\nPasswordAuthentication no\nChallengeResponseAuthentication no\nUsePAM yes\n\nX11Forwarding yes\nPrintMotd no\nAcceptEnv LANG LC_*\nMaxAuthTries 6\nLoginGraceTime 60\n\nClientAliveInterval 30\nClientAliveCountMax 3\n\nTCPKeepAlive yes\nCompression no\nMaxSessions 10\n' > /etc/ssh/sshd_config; \
+    ssh-keygen -A
 
 # Pre-install common Python packages for AI/ML development
 RUN pip install --no-cache-dir \
