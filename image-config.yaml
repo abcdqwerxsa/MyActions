@@ -2,7 +2,7 @@
 # Modify this file to customize image name and tags
 
 # Image name (owner prefix is auto-added, just write the image name)
-image_name: clusterd
+image_name: ssh-bastion
 
 # Tags (comma-separated, will be applied to the multi-arch manifest)
-tags: latest,7.2.RC1
+tags: latest,v1.0
