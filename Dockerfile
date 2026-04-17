@@ -17,15 +17,14 @@ ENV PYTHONUNBUFFERED=1 \
 RUN set -e; \
     ARCH=$(uname -m); \
     REPO_URL="http://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/${ARCH}/Packages"; \
-    if command -v rpm >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then \
+    (command -v rpm >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && \
         mkdir -p /tmp/rpm-packages && cd /tmp/rpm-packages && \
-        curl -fsSL -O "${REPO_URL}/python3-dnf-4.14.0-15.oe2203sp4.${ARCH}.rpm" 2>/dev/null || \
-        curl -fsSL -O "${REPO_URL}/python3-dnf-4.14.0-14.oe2203sp4.${ARCH}.rpm" 2>/dev/null || true; \
+        (curl -fsSL -O "${REPO_URL}/python3-dnf-4.14.0-15.oe2203sp4.${ARCH}.rpm" 2>/dev/null || \
+         curl -fsSL -O "${REPO_URL}/python3-dnf-4.14.0-14.oe2203sp4.${ARCH}.rpm" 2>/dev/null || true) && \
         if ls python3-dnf*.rpm 1>/dev/null 2>&1; then \
             rpm -ivh --nodeps python3-dnf*.rpm 2>/dev/null || true; \
         fi; \
-        rm -rf /tmp/rpm-packages; \
-    fi; \
+        rm -rf /tmp/rpm-packages) || true; \
     REPO_DIR="/etc/yum.repos.d"; \
     mkdir -p "$REPO_DIR"; \
     printf '[OS]\nname=OS\nbaseurl=http://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/$basearch/\nenabled=1\ngpgcheck=0\n\n' > "$REPO_DIR/openEuler.repo" && \
