@@ -2,6 +2,6 @@
 # Modify this file to customize image name and tags
 
 # Image name (owner prefix is auto-added, just write the image name)
-image_name: mindspeed-llm
+image_name: cloud-browser-slim
 # Tags (comma-separated, will be applied to the multi-arch manifest)
-tags: latest,v1.6
+tags: latest,v1.0
