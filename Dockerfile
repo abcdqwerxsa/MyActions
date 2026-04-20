@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
-COPY container/package.json .
-COPY container/server.mjs .
+COPY package.json .
+COPY server.mjs .
 
 EXPOSE 9222 8080
 
