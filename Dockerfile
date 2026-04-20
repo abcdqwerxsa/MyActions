@@ -1,7 +1,7 @@
 FROM node:20-slim AS builder
 
 WORKDIR /app
-COPY container/package.json .
+COPY package.json .
 RUN npm install --production && \
     rm -rf /root/.npm
 
