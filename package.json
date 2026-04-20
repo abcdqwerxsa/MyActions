@@ -1,0 +1,9 @@
+{
+  "name": "cloud-browser-container",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@puppeteer/browsers": "^2.0.0"
+  }
+}
