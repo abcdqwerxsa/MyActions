@@ -150,14 +150,22 @@ function setupCdpHandler(ws) {
 // Wrap ensureCdpConnection to set up handlers
 const origEnsure = ensureCdpConnection;
 ensureCdpConnection = function() {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     if (cdpWs && cdpWs.readyState === WebSocket.OPEN) return resolve(cdpWs);
-    if (!cdpWsUrl) return reject(new Error("CDP URL not available"));
 
-    const ws = new WebSocket(cdpWsUrl);
-    ws.on("open", () => { cdpWs = ws; setupCdpHandler(ws); resolve(ws); });
-    ws.on("error", (e) => reject(e));
-    setTimeout(() => reject(new Error("CDP WebSocket connect timeout")), 5_000);
+    try {
+      if (!pageWsUrl) {
+        await connectToPage();
+      }
+      if (!pageWsUrl) return reject(new Error("Page CDP URL not available"));
+
+      const ws = new WebSocket(pageWsUrl);
+      ws.on("open", () => { cdpWs = ws; setupCdpHandler(ws); resolve(ws); });
+      ws.on("error", (e) => reject(e));
+      setTimeout(() => reject(new Error("CDP WebSocket connect timeout")), 5_000);
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
