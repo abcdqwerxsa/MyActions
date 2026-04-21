@@ -141,14 +141,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Tencent TCR
-        if: inputs.push_tcr == true
-        uses: docker/login-action@v3
-        with:
-          registry: ccr.ccs.tencentyun.com
-          username: ${{ vars.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-
       - name: Build and push (${{ matrix.arch }})
         uses: docker/build-push-action@v6
         with:
@@ -157,7 +149,6 @@ jobs:
           tags: |
             ${{ needs.prepare.outputs.tags }}
             ${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}:${{ github.sha }}-${{ matrix.suffix }}
-            ${{ inputs.push_tcr == true && format('ccr.ccs.tencentyun.com/{0}/{1}:{2}-{3}', vars.TCR_NAMESPACE, needs.prepare.outputs.short_image_name, github.sha, matrix.suffix) || '' }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
 
@@ -179,14 +170,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Tencent TCR
-        if: inputs.push_tcr == true
-        uses: docker/login-action@v3
-        with:
-          registry: ccr.ccs.tencentyun.com
-          username: ${{ vars.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-
       - name: Create multi-arch manifest and push
         run: |
           IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
@@ -207,31 +190,6 @@ jobs:
           done
 
           echo ">>> Creating manifest with tags: $MANIFEST_TAGS"
-          docker buildx imagetools create \
-            $MANIFEST_TAGS \
-            $SOURCES
-
-      - name: Create TCR multi-arch manifest
-        if: inputs.push_tcr == true
-        run: |
-          TCR_IMAGE="ccr.ccs.tencentyun.com/${{ vars.TCR_NAMESPACE }}/${{ needs.prepare.outputs.short_image_name }}"
-
-          SOURCES=""
-          for suffix in amd64 arm64; do
-            TAG="${TCR_IMAGE}:${{ github.sha }}-${suffix}"
-            echo ">>> Adding: $TAG"
-            SOURCES="$SOURCES $TAG"
-          done
-
-          IFS=',' read -ra TAG_ARRAY <<< "$(echo '${{ needs.prepare.outputs.tags }}' | tr '\n' ',')"
-          MANIFEST_TAGS=""
-          for tag_line in "${TAG_ARRAY[@]}"; do
-            tag_line=$(echo "$tag_line" | xargs)
-            [ -z "$tag_line" ] && continue
-            MANIFEST_TAGS="$MANIFEST_TAGS -t ${TCR_IMAGE}:${tag_line}"
-          done
-
-          echo ">>> Creating TCR manifest with tags: $MANIFEST_TAGS"
           docker buildx imagetools create \
             $MANIFEST_TAGS \
             $SOURCES
@@ -387,9 +345,45 @@ jobs:
             skopeo copy --all "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
           done
 
+  sync-tcr:
+    runs-on: ubuntu-24.04
+    needs: [prepare, merge]
+    if: inputs.push_tcr == true
+    permissions:
+      packages: read
+    steps:
+      - name: Login to GHCR (source)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Tencent TCR (target)
+        uses: docker/login-action@v3
+        with:
+          registry: ccr.ccs.tencentyun.com
+          username: ${{ vars.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Sync to Tencent TCR
+        run: |
+          SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
+          DST="ccr.ccs.tencentyun.com/${{ vars.TCR_NAMESPACE }}/${{ needs.prepare.outputs.short_image_name }}"
+          echo ">>> Syncing $SRC -> $DST"
+          for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
+            tag_line=$(echo "$tag_line" | xargs)
+            [ -z "$tag_line" ] && continue
+            echo ">>> Copying tag: $tag_line"
+            skopeo copy --all --retry-times 3 "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
+          done
+
   cleanup-ghcr:
     runs-on: ubuntu-24.04
-    needs: [prepare, sync-aliyun, sync-huawei, sync-tencent, sync-dockerhub]
+    needs: [prepare, sync-aliyun, sync-huawei, sync-tencent, sync-dockerhub, sync-tcr]
     if: inputs.push_ghcr == false
     permissions:
       contents: read
