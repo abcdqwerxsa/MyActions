@@ -4,4 +4,4 @@
 # Image name (owner prefix is auto-added, just write the image name)
 image_name: cloud-browser-slim
 # Tags (comma-separated, will be applied to the multi-arch manifest)
-tags: latest,v1.3
+tags: latest,v1.4
