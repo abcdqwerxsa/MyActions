@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@puppeteer/browsers": "^2.0.0"
+    "ws": "^8.18.0"
   }
 }

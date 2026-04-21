@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
+import { WebSocket } from "ws";
 
 const CDP_PORT = 9222;
 const MANAGE_PORT = 8080;
 
 let chromeProcess = null;
 let cdpWsUrl = "";
+let cdpWs = null;
 
 function findChromeBinary() {
   for (const p of ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"]) {
@@ -39,14 +41,9 @@ function startChromium() {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    const timeout = setTimeout(() => {
-      reject(new Error("Chromium start timeout after 15s"));
-    }, 15_000);
+    const timeout = setTimeout(() => reject(new Error("Chromium start timeout")), 15_000);
 
-    chromeProcess.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
+    chromeProcess.on("error", (err) => { clearTimeout(timeout); reject(err); });
 
     const onData = (data) => {
       const line = data.toString();
@@ -61,7 +58,6 @@ function startChromium() {
 
     chromeProcess.stdout.on("data", onData);
     chromeProcess.stderr.on("data", onData);
-
     chromeProcess.on("exit", (code) => {
       console.log(`Chromium exited with code ${code}`);
       chromeProcess = null;
@@ -70,25 +66,80 @@ function startChromium() {
   });
 }
 
-async function closeChromium() {
-  if (chromeProcess) {
-    chromeProcess.kill("SIGTERM");
-    await new Promise((r) => setTimeout(r, 1000));
-    if (chromeProcess) chromeProcess.kill("SIGKILL");
-    chromeProcess = null;
-    cdpWsUrl = "";
-  }
+function ensureCdpConnection() {
+  return new Promise((resolve, reject) => {
+    if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+      return resolve(cdpWs);
+    }
+
+    if (!cdpWsUrl) return reject(new Error("CDP URL not available"));
+
+    // Convert ws://127.0.0.1:9222/devtools/browser/... to connect
+    const ws = new WebSocket(cdpWsUrl);
+    ws.on("open", () => { cdpWs = ws; resolve(ws); });
+    ws.on("error", (e) => reject(e));
+    setTimeout(() => reject(new Error("CDP WebSocket connect timeout")), 5_000);
+  });
+}
+
+let msgId = 0;
+const pending = new Map();
+
+function sendCDP(method, params = {}) {
+  return new Promise(async (resolve, reject) => {
+    const ws = await ensureCdpConnection();
+    const id = ++msgId;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 30_000);
+    pending.set(id, { resolve, reject, timer });
+
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+function setupCdpHandler(ws) {
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.id !== undefined && pending.has(msg.id)) {
+        const p = pending.get(msg.id);
+        clearTimeout(p.timer);
+        pending.delete(msg.id);
+        p.resolve(msg);
+      }
+    } catch {}
+  });
+  ws.on("close", () => { cdpWs = null; });
+  ws.on("error", () => { cdpWs = null; });
+}
+
+// Wrap ensureCdpConnection to set up handlers
+const origEnsure = ensureCdpConnection;
+ensureCdpConnection = function() {
+  return new Promise((resolve, reject) => {
+    if (cdpWs && cdpWs.readyState === WebSocket.OPEN) return resolve(cdpWs);
+    if (!cdpWsUrl) return reject(new Error("CDP URL not available"));
+
+    const ws = new WebSocket(cdpWsUrl);
+    ws.on("open", () => { cdpWs = ws; setupCdpHandler(ws); resolve(ws); });
+    ws.on("error", (e) => reject(e));
+    setTimeout(() => reject(new Error("CDP WebSocket connect timeout")), 5_000);
+  });
 }
 
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${MANAGE_PORT}`);
 
+  // Debug: log incoming request
+  console.log(`[request] ${req.method} ${req.url} -> pathname=${url.pathname}`);
+
+  // Health check
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok", chrome: chromeProcess !== null }));
     return;
   }
 
+  // Get CDP URL
   if (req.method === "GET" && url.pathname === "/cdp-url") {
     if (!cdpWsUrl) {
       res.writeHead(503, { "Content-Type": "application/json" });
@@ -100,13 +151,32 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // Execute CDP command via HTTP
+  if (url.pathname === "/cdp") {
+    try {
+      const body = await readBody(req);
+      console.log(`[/cdp] method=${req.method} body=${body.substring(0, 100)}`);
+      const { method, params } = JSON.parse(body);
+      const result = await sendCDP(method, params);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: String(e) }));
+    }
+    return;
+  }
+
+  // Close
   if (req.method === "POST" && url.pathname === "/close") {
-    await closeChromium();
+    if (chromeProcess) chromeProcess.kill("SIGTERM");
+    chromeProcess = null; cdpWsUrl = "";
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "closed" }));
     return;
   }
 
+  // Start
   if (req.method === "POST" && url.pathname === "/start") {
     if (chromeProcess) {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -128,6 +198,14 @@ async function handleRequest(req, res) {
   res.end(JSON.stringify({ error: "not found" }));
 }
 
+function readBody(req) {
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (chunk) => { data += chunk; });
+    req.on("end", () => resolve(data));
+  });
+}
+
 async function main() {
   console.log("Starting Chromium on boot...");
   try {
@@ -139,7 +217,7 @@ async function main() {
   }
 
   createServer(handleRequest).listen(MANAGE_PORT, () => {
-    console.log(`Management API listening on port ${MANAGE_PORT}`);
+    console.log(`Management API on port ${MANAGE_PORT}`);
   });
 }
 
