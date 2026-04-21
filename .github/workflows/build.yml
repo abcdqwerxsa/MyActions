@@ -28,6 +28,10 @@ on:
         description: "Push to 腾讯云 CNB"
         type: boolean
         default: false
+      push_dockerhub:
+        description: "Push to Docker Hub"
+        type: boolean
+        default: false
 
 env:
   GHCR_REGISTRY: ghcr.io
@@ -301,9 +305,45 @@ jobs:
             skopeo copy --all "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
           done
 
+  sync-dockerhub:
+    runs-on: ubuntu-24.04
+    needs: [prepare, merge]
+    if: inputs.push_dockerhub == true
+    permissions:
+      packages: read
+    steps:
+      - name: Login to GHCR (source)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub (target)
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Sync to Docker Hub
+        run: |
+          SRC="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
+          DST="docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ needs.prepare.outputs.short_image_name }}"
+          echo ">>> Syncing $SRC -> $DST"
+          for tag_line in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
+            tag_line=$(echo "$tag_line" | xargs)
+            [ -z "$tag_line" ] && continue
+            echo ">>> Copying tag: $tag_line"
+            skopeo copy --all "docker://${SRC}:${tag_line}" "docker://${DST}:${tag_line}"
+          done
+
   cleanup-ghcr:
     runs-on: ubuntu-24.04
-    needs: [prepare, sync-aliyun, sync-huawei, sync-tencent]
+    needs: [prepare, sync-aliyun, sync-huawei, sync-tencent, sync-dockerhub]
     if: inputs.push_ghcr == false
     permissions:
       contents: read
