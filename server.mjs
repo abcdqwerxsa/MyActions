@@ -66,19 +66,54 @@ function startChromium() {
   });
 }
 
-function ensureCdpConnection() {
+let pageWsUrl = "";
+
+async function connectToPage() {
+  // List targets via HTTP API to find/create a page
+  const http = await import("node:http");
   return new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:${CDP_PORT}/json`, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", async () => {
+        try {
+          const targets = JSON.parse(data);
+          const page = targets.find(t => t.type === "page");
+          if (page) {
+            pageWsUrl = page.webSocketDebuggerUrl;
+            console.log(`Found page target: ${pageWsUrl}`);
+            resolve(pageWsUrl);
+          } else {
+            reject(new Error("No page target found"));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).on("error", reject);
+  });
+}
+
+function ensureCdpConnection() {
+  return new Promise(async (resolve, reject) => {
     if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
       return resolve(cdpWs);
     }
 
-    if (!cdpWsUrl) return reject(new Error("CDP URL not available"));
+    try {
+      // Get page WebSocket URL
+      if (!pageWsUrl) {
+        await connectToPage();
+      }
+      if (!pageWsUrl) return reject(new Error("Page CDP URL not available"));
 
-    // Convert ws://127.0.0.1:9222/devtools/browser/... to connect
-    const ws = new WebSocket(cdpWsUrl);
-    ws.on("open", () => { cdpWs = ws; resolve(ws); });
-    ws.on("error", (e) => reject(e));
-    setTimeout(() => reject(new Error("CDP WebSocket connect timeout")), 5_000);
+      const ws = new WebSocket(pageWsUrl);
+      ws.on("open", () => { cdpWs = ws; resolve(ws); });
+      ws.on("error", (e) => reject(e));
+      setTimeout(() => reject(new Error("CDP WebSocket connect timeout")), 5_000);
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
@@ -210,7 +245,11 @@ async function main() {
   console.log("Starting Chromium on boot...");
   try {
     const wsUrl = await startChromium();
-    console.log(`Chromium ready: ${wsUrl}`);
+    console.log(`Chromium browser ready: ${wsUrl}`);
+
+    // Connect to page target for page-level CDP commands
+    await connectToPage();
+    console.log(`Page CDP connected: ${pageWsUrl}`);
   } catch (e) {
     console.error(`Failed to start Chromium: ${e}`);
     process.exit(1);
