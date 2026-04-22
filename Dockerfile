@@ -1,27 +1,27 @@
-FROM node:20-slim AS builder
+# SSH Bastion for K8s Tenant Platform
+# Proxies SSH connections from users to their development environment containers
+
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
-COPY package.json .
-RUN npm install --production && \
-    rm -rf /root/.npm
 
-FROM node:20-slim
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Copy source code
+COPY . .
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
-    dumb-init \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
-    && rm -rf /usr/share/doc /usr/share/man /usr/share/locale /usr/share/info
+# Build the bastion binary
+RUN CGO_ENABLED=0 GOOS=linux go build -o /ssh-bastion ./cmd/ssh-bastion
 
-WORKDIR /app
-COPY --from=builder /app/node_modules ./node_modules
-COPY package.json .
-COPY server.mjs .
+# Final image
+FROM alpine:3.19
 
-EXPOSE 9222 8080
+RUN apk add --no-cache ca-certificates tzdata
 
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "server.mjs"]
+COPY --from=builder /ssh-bastion /usr/local/bin/ssh-bastion
+
+EXPOSE 2222
+
+ENTRYPOINT ["ssh-bastion"]
