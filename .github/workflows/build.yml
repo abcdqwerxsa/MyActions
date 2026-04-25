@@ -231,9 +231,12 @@ jobs:
             $SOURCES
 
       - name: Inspect multi-arch image
+        if: always()
+        continue-on-error: true
         run: |
           IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
-          docker buildx imagetools inspect "${IMAGE}:latest"
+          FIRST_TAG=$(echo '${{ needs.prepare.outputs.tags }}' | head -1 | xargs)
+          docker buildx imagetools inspect "${IMAGE}:${FIRST_TAG##*:}"
 
   # --- Sync to Chinese registries ---
 
