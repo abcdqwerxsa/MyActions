@@ -406,6 +406,27 @@ jobs:
           username: ${{ vars.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
 
+      - name: Create Quay.io repository if not exists
+        env:
+          QUAY_TOKEN: ${{ secrets.QUAY_PASSWORD }}
+          QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
+          IMAGE: ${{ needs.prepare.outputs.short_image_name }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $QUAY_TOKEN" \
+            "https://quay.io/api/v1/repository/$QUAY_NS/$IMAGE")
+          if [ "$STATUS" = "200" ]; then
+            echo ">>> Repository $QUAY_NS/$IMAGE already exists"
+          else
+            echo ">>> Creating repository $QUAY_NS/$IMAGE"
+            curl -sf -X POST \
+              -H "Authorization: Bearer $QUAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"repository\":\"$IMAGE\",\"namespace\":\"$QUAY_NS\",\"visibility\":\"public\"}" \
+              "https://quay.io/api/v1/repository"
+            echo ">>> Repository created"
+          fi
+
       - name: Install skopeo
         run: sudo apt-get update && sudo apt-get install -y skopeo
 
