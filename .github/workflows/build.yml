@@ -7,6 +7,19 @@ on:
         description: "Dockerfile URL (leave empty to use repo Dockerfile)"
         required: false
         type: string
+      git_repo_url:
+        description: "Git repo URL (e.g. https://github.com/user/repo.git)"
+        required: false
+        type: string
+      git_repo_ref:
+        description: "Git branch/tag/commit (default: main)"
+        required: false
+        default: "main"
+        type: string
+      git_repo_path:
+        description: "Subdirectory containing Dockerfile (default: repo root)"
+        required: false
+        type: string
       config_file:
         description: "Config YAML path (relative to repo root, e.g. image-config.yaml)"
         required: false
@@ -52,6 +65,9 @@ jobs:
       short_image_name: ${{ steps.config.outputs.short_image_name }}
       tags: ${{ steps.config.outputs.tags }}
       dockerfile_source: ${{ steps.config.outputs.dockerfile_source }}
+      git_repo_url: ${{ steps.config.outputs.git_repo_url }}
+      git_repo_ref: ${{ steps.config.outputs.git_repo_ref }}
+      git_repo_path: ${{ steps.config.outputs.git_repo_path }}
     permissions:
       contents: read
 
@@ -92,6 +108,11 @@ jobs:
             echo ">>> Using Dockerfile from URL: ${{ inputs.dockerfile_url }}"
           fi
 
+          if [ -n "${{ inputs.git_repo_url }}" ]; then
+            DOCKERFILE_SOURCE="git"
+            echo ">>> Using Dockerfile from Git repo: ${{ inputs.git_repo_url }} @ ${{ inputs.git_repo_ref }}"
+          fi
+
           TAG_LIST=""
           IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
           for tag in "${TAG_ARRAY[@]}"; do
@@ -107,6 +128,9 @@ jobs:
           echo -e "$TAG_LIST" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
           echo "dockerfile_source=$DOCKERFILE_SOURCE" >> "$GITHUB_OUTPUT"
+          echo "git_repo_url=${{ inputs.git_repo_url }}" >> "$GITHUB_OUTPUT"
+          echo "git_repo_ref=${{ inputs.git_repo_ref }}" >> "$GITHUB_OUTPUT"
+          echo "git_repo_path=${{ inputs.git_repo_path }}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -135,6 +159,25 @@ jobs:
           echo ">>> Downloaded Dockerfile from URL"
           head -5 Dockerfile
 
+      - name: Clone Git repo
+        if: needs.prepare.outputs.dockerfile_source == 'git'
+        run: |
+          GIT_REPO_URL="${{ needs.prepare.outputs.git_repo_url }}"
+          GIT_REPO_REF="${{ needs.prepare.outputs.git_repo_ref }}"
+          GIT_REPO_PATH="${{ needs.prepare.outputs.git_repo_path }}"
+
+          echo ">>> Cloning $GIT_REPO_URL @ ${GIT_REPO_REF:-main}"
+          git clone --depth 1 --branch "${GIT_REPO_REF:-main}" "$GIT_REPO_URL" /tmp/build-repo
+
+          BUILD_CTX="/tmp/build-repo"
+          if [ -n "$GIT_REPO_PATH" ]; then
+            BUILD_CTX="/tmp/build-repo/$GIT_REPO_PATH"
+          fi
+
+          echo ">>> Build context: $BUILD_CTX"
+          ls -la "$BUILD_CTX"
+          echo "build_context=$BUILD_CTX" >> "$GITHUB_ENV"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -148,7 +191,7 @@ jobs:
       - name: Build and push (${{ matrix.arch }})
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ needs.prepare.outputs.dockerfile_source == 'git' && env.build_context || '.' }}
           push: true
           tags: |
             ${{ needs.prepare.outputs.tags }}
