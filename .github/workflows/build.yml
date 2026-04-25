@@ -20,8 +20,16 @@ on:
         description: "Subdirectory containing Dockerfile (default: repo root)"
         required: false
         type: string
+      image_name:
+        description: "Image name (e.g. my-image or owner/my-image), leave empty to use image-config.yaml"
+        required: false
+        type: string
+      image_tags:
+        description: "Tags (comma-separated, e.g. latest,v1.0), leave empty to use image-config.yaml"
+        required: false
+        type: string
       config_file:
-        description: "Config YAML path (relative to repo root, e.g. image-config.yaml)"
+        description: "Config YAML path (fallback when image_name/tags are empty)"
         required: false
         default: "image-config.yaml"
         type: string
@@ -101,6 +109,20 @@ jobs:
             echo ">>> Config: image_name=$IMAGE_NAME, tags=$TAGS"
           else
             echo ">>> No config file found, using defaults"
+          fi
+
+          # Form inputs override config file
+          if [ -n "${{ inputs.image_name }}" ]; then
+            if echo "${{ inputs.image_name }}" | grep -qv '/'; then
+              IMAGE_NAME="${{ github.repository_owner }}/${{ inputs.image_name }}"
+            else
+              IMAGE_NAME="${{ inputs.image_name }}"
+            fi
+            echo ">>> Overridden image_name from form: $IMAGE_NAME"
+          fi
+          if [ -n "${{ inputs.image_tags }}" ]; then
+            TAGS="${{ inputs.image_tags }}"
+            echo ">>> Overridden tags from form: $TAGS"
           fi
 
           if [ -n "${{ inputs.dockerfile_url }}" ]; then
