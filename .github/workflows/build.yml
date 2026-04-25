@@ -454,12 +454,17 @@ jobs:
             echo ">>> Repository $QUAY_NS/$IMAGE already exists"
           else
             echo ">>> Creating repository $QUAY_NS/$IMAGE"
-            curl -sf -X POST \
+            RESP=$(curl -s -w "\n%{http_code}" -X POST \
               -H "Authorization: Bearer $QUAY_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{\"repository\":\"$IMAGE\",\"namespace\":\"$QUAY_NS\",\"visibility\":\"public\"}" \
-              "https://quay.io/api/v1/repository"
-            echo ">>> Repository created"
+              "https://quay.io/api/v1/repository")
+            HTTP_CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | sed '$d')
+            echo ">>> Response ($HTTP_CODE): $BODY"
+            if [ "$HTTP_CODE" -ge 400 ]; then
+              echo ">>> Warning: failed to create repository, will try pushing anyway"
+            fi
           fi
 
       - name: Install skopeo
