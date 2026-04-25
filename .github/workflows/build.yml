@@ -440,7 +440,7 @@ jobs:
 
       - name: Create Quay.io repository if not exists
         env:
-          QUAY_TOKEN: ${{ secrets.QUAY_PASSWORD }}
+          QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
           QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
           IMAGE: ${{ needs.prepare.outputs.short_image_name }}
         run: |
