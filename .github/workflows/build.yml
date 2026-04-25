@@ -21,17 +21,13 @@ on:
         required: false
         type: string
       image_name:
-        description: "Image name (e.g. my-image or owner/my-image), leave empty to use image-config.yaml"
-        required: false
+        description: "Image name (e.g. my-image or owner/my-image)"
+        required: true
         type: string
       image_tags:
-        description: "Tags (comma-separated, e.g. latest,v1.0), leave empty to use image-config.yaml"
+        description: "Tags (comma-separated, e.g. latest,v1.0)"
         required: false
-        type: string
-      config_file:
-        description: "Config YAML path (fallback when image_name/tags are empty)"
-        required: false
-        default: "image-config.yaml"
+        default: "latest"
         type: string
       push_ghcr:
         description: "Push to GitHub Container Registry"
@@ -80,50 +76,21 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Parse image config
         id: config
         run: |
-          CONFIG_FILE="${{ inputs.config_file || 'image-config.yaml' }}"
+          # Parse image name
+          IMAGE_NAME="${{ inputs.image_name }}"
+          if echo "$IMAGE_NAME" | grep -qv '/'; then
+            IMAGE_NAME="${{ github.repository_owner }}/${IMAGE_NAME}"
+          fi
+          echo ">>> Image name: $IMAGE_NAME"
 
-          # Default values
-          IMAGE_NAME="${{ github.repository }}"
-          TAGS="latest,${{ github.sha }}"
+          # Parse tags
+          TAGS="${{ inputs.image_tags }}"
+          echo ">>> Tags: $TAGS"
+
           DOCKERFILE_SOURCE="repo"
-
-          # Override from config file if exists
-          if [ -f "$CONFIG_FILE" ]; then
-            echo ">>> Found config file: $CONFIG_FILE"
-            VAL=$(grep -E '^image_name:' "$CONFIG_FILE" | head -1 | sed 's/^image_name:[[:space:]]*//' | tr -d '"' | tr -d "'")
-            if [ -n "$VAL" ]; then
-              if echo "$VAL" | grep -qv '/'; then
-                IMAGE_NAME="${{ github.repository_owner }}/${VAL}"
-              else
-                IMAGE_NAME="$VAL"
-              fi
-            fi
-            VAL=$(grep -E '^tags:' "$CONFIG_FILE" | head -1 | sed 's/^tags:[[:space:]]*//' | tr -d '"' | tr -d "'")
-            [ -n "$VAL" ] && TAGS="$VAL"
-            echo ">>> Config: image_name=$IMAGE_NAME, tags=$TAGS"
-          else
-            echo ">>> No config file found, using defaults"
-          fi
-
-          # Form inputs override config file
-          if [ -n "${{ inputs.image_name }}" ]; then
-            if echo "${{ inputs.image_name }}" | grep -qv '/'; then
-              IMAGE_NAME="${{ github.repository_owner }}/${{ inputs.image_name }}"
-            else
-              IMAGE_NAME="${{ inputs.image_name }}"
-            fi
-            echo ">>> Overridden image_name from form: $IMAGE_NAME"
-          fi
-          if [ -n "${{ inputs.image_tags }}" ]; then
-            TAGS="${{ inputs.image_tags }}"
-            echo ">>> Overridden tags from form: $TAGS"
-          fi
 
           if [ -n "${{ inputs.dockerfile_url }}" ]; then
             DOCKERFILE_SOURCE="url"
