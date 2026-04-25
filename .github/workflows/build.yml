@@ -457,7 +457,7 @@ jobs:
             RESP=$(curl -s -w "\n%{http_code}" -X POST \
               -H "Authorization: Bearer $QUAY_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"repository\":\"$IMAGE\",\"namespace\":\"$QUAY_NS\",\"visibility\":\"public\"}" \
+              -d "{\"repository\":\"$IMAGE\",\"namespace\":\"$QUAY_NS\",\"visibility\":\"public\",\"description\":\"$IMAGE container image\"}" \
               "https://quay.io/api/v1/repository")
             HTTP_CODE=$(echo "$RESP" | tail -1)
             BODY=$(echo "$RESP" | sed '$d')
