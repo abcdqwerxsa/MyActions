@@ -20,6 +20,10 @@ on:
         description: "Subdirectory containing Dockerfile (default: repo root)"
         required: false
         type: string
+      build_context_path:
+        description: "Build context root (default: repo root). Dockerfile can access files from this path."
+        required: false
+        type: string
       image_name:
         description: "Image name (e.g. my-image or owner/my-image)"
         required: true
@@ -72,6 +76,7 @@ jobs:
       git_repo_url: ${{ steps.config.outputs.git_repo_url }}
       git_repo_ref: ${{ steps.config.outputs.git_repo_ref }}
       git_repo_path: ${{ steps.config.outputs.git_repo_path }}
+      build_context_path: ${{ steps.config.outputs.build_context_path }}
     permissions:
       contents: read
 
@@ -120,6 +125,7 @@ jobs:
           echo "git_repo_url=${{ inputs.git_repo_url }}" >> "$GITHUB_OUTPUT"
           echo "git_repo_ref=${{ inputs.git_repo_ref }}" >> "$GITHUB_OUTPUT"
           echo "git_repo_path=${{ inputs.git_repo_path }}" >> "$GITHUB_OUTPUT"
+          echo "build_context_path=${{ inputs.build_context_path }}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -154,18 +160,28 @@ jobs:
           GIT_REPO_URL="${{ needs.prepare.outputs.git_repo_url }}"
           GIT_REPO_REF="${{ needs.prepare.outputs.git_repo_ref }}"
           GIT_REPO_PATH="${{ needs.prepare.outputs.git_repo_path }}"
+          BUILD_CTX_PATH="${{ needs.prepare.outputs.build_context_path }}"
 
           echo ">>> Cloning $GIT_REPO_URL @ ${GIT_REPO_REF:-main}"
           git clone --depth 1 --branch "${GIT_REPO_REF:-main}" "$GIT_REPO_URL" /tmp/build-repo
 
+          # Build context: where Docker can access files from
           BUILD_CTX="/tmp/build-repo"
+          if [ -n "$BUILD_CTX_PATH" ]; then
+            BUILD_CTX="/tmp/build-repo/$BUILD_CTX_PATH"
+          fi
+
+          # Dockerfile location
+          DOCKERFILE="/tmp/build-repo/Dockerfile"
           if [ -n "$GIT_REPO_PATH" ]; then
-            BUILD_CTX="/tmp/build-repo/$GIT_REPO_PATH"
+            DOCKERFILE="/tmp/build-repo/$GIT_REPO_PATH/Dockerfile"
           fi
 
           echo ">>> Build context: $BUILD_CTX"
+          echo ">>> Dockerfile: $DOCKERFILE"
           ls -la "$BUILD_CTX"
           echo "build_context=$BUILD_CTX" >> "$GITHUB_ENV"
+          echo "dockerfile_path=$DOCKERFILE" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -181,6 +197,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ needs.prepare.outputs.dockerfile_source == 'git' && env.build_context || '.' }}
+          file: ${{ needs.prepare.outputs.dockerfile_source == 'git' && env.dockerfile_path || '' }}
           push: true
           tags: |
             ${{ needs.prepare.outputs.tags }}
