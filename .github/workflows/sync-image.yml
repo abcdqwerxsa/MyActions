@@ -133,7 +133,7 @@ jobs:
             SRC_USER="$DOCKERHUB_USER" SRC_PASS="$DOCKERHUB_PASS"
           fi
 
-          local args=(--all --retry-times 3)
+          args=(--all --retry-times 3)
           if [[ -n "$SRC_USER" ]]; then
             args+=(--src-creds "$SRC_USER:$SRC_PASS")
           fi
