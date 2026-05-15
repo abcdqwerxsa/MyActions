@@ -1,122 +1,70 @@
-name: Sync Docker Images
+name: Sync Docker Image
 
 on:
   workflow_dispatch:
     inputs:
       source_image:
-        description: "Source image (e.g. nginx:latest, ghcr.io/user/img:v1). Leave empty to sync all from config."
-        required: false
+        description: "Source image (e.g. nginx:latest, ghcr.io/user/img:v1)"
+        required: true
         type: string
       target_name:
-        description: "Target image name override. Auto-derived from source if empty."
+        description: "Target image name override (auto-derived if empty)"
         required: false
         type: string
-      push_ghcr:
-        description: "Push to GitHub Container Registry"
-        type: boolean
-        default: false
-      push_aliyun:
-        description: "Push to 阿里云 ACR"
-        type: boolean
-        default: false
-      push_huawei:
-        description: "Push to 华为云 SWR"
-        type: boolean
-        default: false
-      push_tencent:
-        description: "Push to 腾讯云 CNB"
-        type: boolean
-        default: false
-      push_dockerhub:
-        description: "Push to Docker Hub"
-        type: boolean
-        default: false
-      push_tcr:
-        description: "Push to 腾讯云 TCR"
-        type: boolean
-        default: false
-      push_quay:
-        description: "Push to Quay.io"
-        type: boolean
-        default: false
-  push:
-    paths:
-      - ".github/sync-images.yml"
-    branches: ["main"]
+      target_registry:
+        description: "Target registry"
+        required: true
+        type: choice
+        options:
+          - GHCR
+          - 阿里云 ACR
+          - 华为云 SWR
+          - 腾讯云 CNB
+          - Docker Hub
+          - 腾讯云 TCR
+          - Quay.io
 
 jobs:
-  prepare:
-    runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.parse.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Parse images
-        id: parse
-        run: |
-          INPUT="${{ inputs.source_image }}"
-
-          if [ -n "$INPUT" ]; then
-            # Parse single image from input: extract source and tag
-            after_colon="${INPUT##*:}"
-            if [[ "$after_colon" != *"/"* ]] && [[ "$after_colon" != "$INPUT" ]]; then
-              SOURCE="${INPUT%:*}"
-              TAG="$after_colon"
-            else
-              SOURCE="$INPUT"
-              TAG="latest"
-            fi
-
-            # Derive target name
-            TARGET="${{ inputs.target_name }}"
-            if [ -z "$TARGET" ]; then
-              TARGET="${SOURCE##*/}"
-              TARGET="${TARGET#library:}"
-            fi
-
-            MATRIX=$(jq -n -c \
-              --arg s "$SOURCE" --arg t "$TAG" --arg n "$TARGET" \
-              '[{source: $s, tag: $t, target_name: $n}]')
-          else
-            if [ ! -f .github/sync-images.yml ]; then
-              echo "::error::No source image provided and .github/sync-images.yml not found"
-              exit 1
-            fi
-
-            MATRIX=$(yq -o json '.images | map({
-              source: .source,
-              tag: (.tag // "latest"),
-              target_name: (.name // (.source | split("/") | .[-1]))
-            })' .github/sync-images.yml)
-          fi
-
-          echo ">>> Matrix: $MATRIX"
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
   sync:
-    needs: prepare
-    if: needs.prepare.outputs.matrix != '[]'
-    strategy:
-      matrix:
-        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
-      fail-fast: false
     runs-on: ubuntu-24.04
     permissions:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Parse source image
+        id: parse
+        run: |
+          INPUT="${{ inputs.source_image }}"
+          after_colon="${INPUT##*:}"
+          if [[ "$after_colon" != *"/"* ]] && [[ "$after_colon" != "$INPUT" ]]; then
+            SOURCE="${INPUT%:*}"
+            TAG="$after_colon"
+          else
+            SOURCE="$INPUT"
+            TAG="latest"
+          fi
+
+          TARGET="${{ inputs.target_name }}"
+          if [ -z "$TARGET" ]; then
+            TARGET="${SOURCE##*/}"
+            TARGET="${TARGET#library:}"
+          fi
+
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo ">>> Source: $SOURCE:$TAG -> Target name: $TARGET"
+          echo ">>> Registry: ${{ inputs.target_registry }}"
 
       - name: Install skopeo
         run: sudo apt-get update && sudo apt-get install -y skopeo
 
       - name: Create Quay repository if needed
-        if: inputs.push_quay == true
+        if: inputs.target_registry == 'Quay.io'
         env:
           QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
           QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
-          IMAGE: ${{ matrix.target_name }}
+          IMAGE: ${{ steps.parse.outputs.target }}
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $QUAY_TOKEN" \
@@ -138,28 +86,19 @@ jobs:
             fi
           fi
 
-      - name: Sync to all targets
+      - name: Sync image
         env:
-          SOURCE: ${{ matrix.source }}
-          TAG: ${{ matrix.tag }}
-          TARGET: ${{ matrix.target_name }}
-          # Target flags
-          PUSH_GHCR: ${{ inputs.push_ghcr }}
-          PUSH_ALIYUN: ${{ inputs.push_aliyun }}
-          PUSH_HUAWEI: ${{ inputs.push_huawei }}
-          PUSH_TENCENT: ${{ inputs.push_tencent }}
-          PUSH_DOCKERHUB: ${{ inputs.push_dockerhub }}
-          PUSH_TCR: ${{ inputs.push_tcr }}
-          PUSH_QUAY: ${{ inputs.push_quay }}
-          # GHCR
-          GHCR_REGISTRY: ghcr.io
+          SOURCE: ${{ steps.parse.outputs.source }}
+          TAG: ${{ steps.parse.outputs.tag }}
+          TARGET: ${{ steps.parse.outputs.target }}
+          REGISTRY: ${{ inputs.target_registry }}
+          # Source auth
           GHCR_USER: ${{ github.actor }}
           GHCR_PASS: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_OWNER: ${{ github.repository_owner }}
-          # Docker Hub
           DOCKERHUB_USER: ${{ vars.DOCKERHUB_USERNAME }}
           DOCKERHUB_PASS: ${{ secrets.DOCKERHUB_TOKEN }}
-          DOCKERHUB_NS: ${{ vars.DOCKERHUB_NAMESPACE }}
+          # GHCR target
+          GHCR_OWNER: ${{ github.repository_owner }}
           # Aliyun
           ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
           ALIYUN_USER: ${{ vars.ALIYUN_REGISTRY_USERNAME }}
@@ -175,6 +114,8 @@ jobs:
           TENCENT_USER: ${{ vars.TENCENT_REGISTRY_USERNAME }}
           TENCENT_PASS: ${{ secrets.TENCENT_REGISTRY_PASSWORD }}
           TENCENT_NS: ${{ vars.TENCENT_NAMESPACE }}
+          # Docker Hub
+          DOCKERHUB_NS: ${{ vars.DOCKERHUB_NAMESPACE }}
           # TCR
           TCR_USER: ${{ vars.TCR_USERNAME }}
           TCR_PASS: ${{ secrets.TCR_PASSWORD }}
@@ -184,87 +125,64 @@ jobs:
           QUAY_PASS: ${{ secrets.QUAY_PASSWORD }}
           QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
         run: |
-          echo ">>> Syncing $SOURCE:$TAG -> target: $TARGET"
-
-          # Determine source credentials based on registry
+          # Source credentials
           SRC_USER="" SRC_PASS=""
           if [[ "$SOURCE" == ghcr.io/* ]]; then
-            SRC_USER="$GHCR_USER"
-            SRC_PASS="$GHCR_PASS"
+            SRC_USER="$GHCR_USER" SRC_PASS="$GHCR_PASS"
           elif [[ -n "$DOCKERHUB_USER" ]]; then
-            SRC_USER="$DOCKERHUB_USER"
-            SRC_PASS="$DOCKERHUB_PASS"
+            SRC_USER="$DOCKERHUB_USER" SRC_PASS="$DOCKERHUB_PASS"
           fi
 
+          local args=(--all --retry-times 3)
           if [[ -n "$SRC_USER" ]]; then
-            echo ">>> Source auth: configured for $( [[ "$SOURCE" == ghcr.io/* ]] && echo 'GHCR' || echo 'Docker Hub' )"
-          else
-            echo ">>> Source auth: none (public image)"
+            args+=(--src-creds "$SRC_USER:$SRC_PASS")
           fi
 
-          skopeo_sync() {
-            local dst="$1" dst_user="$2" dst_pass="$3"
+          case "$REGISTRY" in
+            GHCR)
+              DST="ghcr.io/$GHCR_OWNER/$TARGET"
+              args+=(--dest-creds "$GHCR_USER:$GHCR_PASS")
+              ;;
+            "阿里云 ACR")
+              DST="$ALIYUN_REGISTRY/$ALIYUN_NS/$TARGET"
+              args+=(--dest-creds "$ALIYUN_USER:$ALIYUN_PASS")
+              ;;
+            "华为云 SWR")
+              DST="$HUAWEI_REGISTRY/$HUAWEI_NS/$TARGET"
+              args+=(--dest-creds "$HUAWEI_USER:$HUAWEI_PASS")
+              ;;
+            "腾讯云 CNB")
+              DST="$TENCENT_REGISTRY/$TENCENT_NS/$TARGET"
+              args+=(--dest-creds "$TENCENT_USER:$TENCENT_PASS")
+              ;;
+            "Docker Hub")
+              DST="docker.io/$DOCKERHUB_NS/$TARGET"
+              args+=(--dest-creds "$DOCKERHUB_USER:$DOCKERHUB_PASS")
+              ;;
+            "腾讯云 TCR")
+              DST="ccr.ccs.tencentyun.com/$TCR_NS/$TARGET"
+              args+=(--dest-creds "$TCR_USER:$TCR_PASS")
+              ;;
+            "Quay.io")
+              DST="quay.io/$QUAY_NS/$TARGET"
+              args+=(--dest-creds "$QUAY_USER:$QUAY_PASS")
+              ;;
+            *)
+              echo "::error::Unknown registry: $REGISTRY"
+              exit 1
+              ;;
+          esac
 
-            local args=(--all --retry-times 3)
-            if [[ -n "$SRC_USER" ]]; then
-              args+=(--src-creds "$SRC_USER:$SRC_PASS")
-            fi
-            if [[ -n "$dst_user" ]]; then
-              args+=(--dest-creds "$dst_user:$dst_pass")
-            fi
+          echo ">>> Syncing $SOURCE:$TAG -> $DST:$TAG ($REGISTRY)"
+          skopeo copy "${args[@]}" "docker://$SOURCE:$TAG" "docker://$DST:$TAG"
+          echo "::notice title=Image Synced::$DST:$TAG"
 
-            echo ">>> $SOURCE:$TAG -> $dst:$TAG"
-            skopeo copy "${args[@]}" "docker://$SOURCE:$TAG" "docker://$dst:$TAG"
-            echo "::notice title=Image Synced::$dst:$TAG"
-          }
-
-          SYNC_COUNT=0
-
-          # GHCR
-          if [[ "$PUSH_GHCR" == "true" ]]; then
-            skopeo_sync "$GHCR_REGISTRY/$GHCR_OWNER/$TARGET" "$GHCR_USER" "$GHCR_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          # Aliyun ACR
-          if [[ "$PUSH_ALIYUN" == "true" ]]; then
-            skopeo_sync "$ALIYUN_REGISTRY/$ALIYUN_NS/$TARGET" "$ALIYUN_USER" "$ALIYUN_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          # Huawei SWR
-          if [[ "$PUSH_HUAWEI" == "true" ]]; then
-            skopeo_sync "$HUAWEI_REGISTRY/$HUAWEI_NS/$TARGET" "$HUAWEI_USER" "$HUAWEI_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          # Tencent CNB
-          if [[ "$PUSH_TENCENT" == "true" ]]; then
-            skopeo_sync "$TENCENT_REGISTRY/$TENCENT_NS/$TARGET" "$TENCENT_USER" "$TENCENT_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          # Docker Hub
-          if [[ "$PUSH_DOCKERHUB" == "true" ]]; then
-            skopeo_sync "docker.io/$DOCKERHUB_NS/$TARGET" "$DOCKERHUB_USER" "$DOCKERHUB_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          # Tencent TCR
-          if [[ "$PUSH_TCR" == "true" ]]; then
-            skopeo_sync "ccr.ccs.tencentyun.com/$TCR_NS/$TARGET" "$TCR_USER" "$TCR_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          # Quay
-          if [[ "$PUSH_QUAY" == "true" ]]; then
-            skopeo_sync "quay.io/$QUAY_NS/$TARGET" "$QUAY_USER" "$QUAY_PASS"
-            SYNC_COUNT=$((SYNC_COUNT + 1))
-          fi
-
-          if [[ $SYNC_COUNT -eq 0 ]]; then
-            echo "::error::No target registry selected. Please enable at least one."
-            exit 1
-          fi
-
-          echo ">>> Done! Synced $SOURCE:$TAG to $SYNC_COUNT registry/registries."
+      - name: Summary
+        run: |
+          echo "### Sync Complete :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Source | \`${{ steps.parse.outputs.source }}:${{ steps.parse.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | \`${{ steps.parse.outputs.target }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Registry | ${{ inputs.target_registry }} |" >> "$GITHUB_STEP_SUMMARY"
