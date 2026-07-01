@@ -174,7 +174,7 @@ jobs:
           esac
 
           echo ">>> Syncing $SOURCE:$TAG -> $DST:$TAG ($REGISTRY)"
-          skopeo copy "${args[@]}" "docker://$SOURCE:$TAG" "docker://$DST:$TAG"
+          skopeo copy --src-no-creds "${args[@]}" "docker://$SOURCE:$TAG" "docker://$DST:$TAG"
           echo "::notice title=Image Synced::$DST:$TAG"
 
       - name: Summary
