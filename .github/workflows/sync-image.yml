@@ -125,57 +125,47 @@ jobs:
           QUAY_PASS: ${{ secrets.QUAY_PASSWORD }}
           QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
         run: |
-          # Source credentials
-          SRC_USER="" SRC_PASS=""
-          if [[ "$SOURCE" == ghcr.io/* ]]; then
-            SRC_USER="$GHCR_USER" SRC_PASS="$GHCR_PASS"
-          elif [[ -n "$DOCKERHUB_USER" ]]; then
-            SRC_USER="$DOCKERHUB_USER" SRC_PASS="$DOCKERHUB_PASS"
-          fi
-
-          args=(--all --retry-times 3)
-          if [[ -n "$SRC_USER" ]]; then
-            args+=(--src-creds "$SRC_USER:$SRC_PASS")
-          fi
-
-          case "$REGISTRY" in
-            GHCR)
-              DST="ghcr.io/$GHCR_OWNER/$TARGET"
-              args+=(--dest-creds "$GHCR_USER:$GHCR_PASS")
-              ;;
-            "阿里云 ACR")
-              DST="$ALIYUN_REGISTRY/$ALIYUN_NS/$TARGET"
-              args+=(--dest-creds "$ALIYUN_USER:$ALIYUN_PASS")
-              ;;
-            "华为云 SWR")
-              DST="$HUAWEI_REGISTRY/$HUAWEI_NS/$TARGET"
-              args+=(--dest-creds "$HUAWEI_USER:$HUAWEI_PASS")
-              ;;
-            "腾讯云 CNB")
-              DST="$TENCENT_REGISTRY/$TENCENT_NS/$TARGET"
-              args+=(--dest-creds "$TENCENT_USER:$TENCENT_PASS")
-              ;;
-            "Docker Hub")
-              DST="docker.io/$DOCKERHUB_NS/$TARGET"
-              args+=(--dest-creds "$DOCKERHUB_USER:$DOCKERHUB_PASS")
-              ;;
-            "腾讯云 TCR")
-              DST="ccr.ccs.tencentyun.com/$TCR_NS/$TARGET"
-              args+=(--dest-creds "$TCR_USER:$TCR_PASS")
-              ;;
-            "Quay.io")
-              DST="quay.io/$QUAY_NS/$TARGET"
-              args+=(--dest-creds "$QUAY_USER:$QUAY_PASS")
-              ;;
-            *)
-              echo "::error::Unknown registry: $REGISTRY"
-              exit 1
-              ;;
-          esac
-
-          echo ">>> Syncing $SOURCE:$TAG -> $DST:$TAG ($REGISTRY)"
-          skopeo copy --src-no-creds "${args[@]}" "docker://$SOURCE:$TAG" "docker://$DST:$TAG"
-          echo "::notice title=Image Synced::$DST:$TAG"
+              # 不再需要源认证，强制使用 --src-no-creds
+              args=(--all --retry-times 3 --src-no-creds)
+          
+              case "$REGISTRY" in
+                GHCR)
+                  DST="ghcr.io/$GHCR_OWNER/$TARGET"
+                  args+=(--dest-creds "$GHCR_USER:$GHCR_PASS")
+                  ;;
+                "阿里云 ACR")
+                  DST="$ALIYUN_REGISTRY/$ALIYUN_NS/$TARGET"
+                  args+=(--dest-creds "$ALIYUN_USER:$ALIYUN_PASS")
+                  ;;
+                "华为云 SWR")
+                  DST="$HUAWEI_REGISTRY/$HUAWEI_NS/$TARGET"
+                  args+=(--dest-creds "$HUAWEI_USER:$HUAWEI_PASS")
+                  ;;
+                "腾讯云 CNB")
+                  DST="$TENCENT_REGISTRY/$TENCENT_NS/$TARGET"
+                  args+=(--dest-creds "$TENCENT_USER:$TENCENT_PASS")
+                  ;;
+                "Docker Hub")
+                  DST="docker.io/$DOCKERHUB_NS/$TARGET"
+                  args+=(--dest-creds "$DOCKERHUB_USER:$DOCKERHUB_PASS")
+                  ;;
+                "腾讯云 TCR")
+                  DST="ccr.ccs.tencentyun.com/$TCR_NS/$TARGET"
+                  args+=(--dest-creds "$TCR_USER:$TCR_PASS")
+                  ;;
+                "Quay.io")
+                  DST="quay.io/$QUAY_NS/$TARGET"
+                  args+=(--dest-creds "$QUAY_USER:$QUAY_PASS")
+                  ;;
+                *)
+                  echo "::error::Unknown registry: $REGISTRY"
+                  exit 1
+                  ;;
+              esac
+          
+              echo ">>> Syncing $SOURCE:$TAG -> $DST:$TAG ($REGISTRY)"
+              skopeo copy "${args[@]}" "docker://$SOURCE:$TAG" "docker://$DST:$TAG"
+              echo "::notice title=Image Synced::$DST:$TAG"          
 
       - name: Summary
         run: |
