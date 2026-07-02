@@ -126,7 +126,7 @@ jobs:
           QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
         run: |
               # 不再需要源认证，强制使用 --src-no-creds
-              args=(--all --retry-times 3 --src-no-creds)
+              args=(--all --retry-times 3 --multi-arch=all --src-no-creds)
           
               case "$REGISTRY" in
                 GHCR)
