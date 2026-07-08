@@ -1,0 +1,22 @@
+# 批量同步镜像列表
+#
+# 用法：Actions → Sync Docker Image → mode 选 batch → 选 target_registry → Run
+# 目标仓库整表共用一个：由触发时的 target_registry 决定，本文件不写仓库。
+#
+# 每个条目支持两种写法：
+#   1) 纯字符串：只给镜像引用，tag 跟随源、目标名取最后一段
+#   2) 对象：source 必填；target 可选（覆盖目标镜像名，默认取 source 最后一段，
+#      自动去掉 library: 前缀）
+#
+# 源镜像须为公开可拉取（沿用 --src-no-creds）。单条失败不会中断整批。
+
+images:
+  # 对象写法
+  - source: nginx:1.25.3
+  - source: redis:7.2
+    target: my-redis              # 覆盖目标镜像名
+  - source: ghcr.io/foo/bar:v1.2.0
+    target: bar
+
+  # 纯字符串写法（等价于只写 source）
+  # - hello-world:latest

@@ -3,16 +3,16 @@ name: Sync Docker Image
 on:
   workflow_dispatch:
     inputs:
-      source_image:
-        description: "Source image (e.g. nginx:latest, ghcr.io/user/img:v1)"
+      mode:
+        description: "single = 单镜像表单; batch = 读 sync-images.yaml 批量"
         required: true
-        type: string
-      target_name:
-        description: "Target image name override (auto-derived if empty)"
-        required: false
-        type: string
+        type: choice
+        default: single
+        options:
+          - single
+          - batch
       target_registry:
-        description: "Target registry"
+        description: "目标仓库（单/批共用，整表推送到同一个）"
         required: true
         type: choice
         options:
@@ -23,9 +23,29 @@ on:
           - Docker Hub
           - 腾讯云 TCR
           - GHCR
+      source_image:
+        description: "Source image（single 模式，e.g. nginx:latest, ghcr.io/user/img:v1）"
+        required: false
+        type: string
+      target_name:
+        description: "Target image name override（single 模式，留空则自动派生）"
+        required: false
+        type: string
+      images_file:
+        description: "批量镜像列表文件（batch 模式，相对仓库根）"
+        required: false
+        type: string
+        default: sync-images.yaml
+      min_free_gb:
+        description: "最小可用磁盘 GB（batch 模式，不足则清理临时空间）"
+        required: false
+        type: string
+        default: "5"
 
 jobs:
-  sync:
+  # ---------------- single：原单镜像表单逻辑（原样保留） ----------------
+  sync-single:
+    if: inputs.mode == 'single'
     runs-on: ubuntu-24.04
     permissions:
       packages: write
@@ -35,6 +55,10 @@ jobs:
         id: parse
         run: |
           INPUT="${{ inputs.source_image }}"
+          if [ -z "$INPUT" ]; then
+            echo "::error::mode=single 需要填写 source_image"
+            exit 1
+          fi
           after_colon="${INPUT##*:}"
           if [[ "$after_colon" != *"/"* ]] && [[ "$after_colon" != "$INPUT" ]]; then
             SOURCE="${INPUT%:*}"
@@ -127,7 +151,7 @@ jobs:
         run: |
               # 不再需要源认证，强制使用 --src-no-creds
               args=(--all --retry-times 3  --src-no-creds)
-          
+
               case "$REGISTRY" in
                 GHCR)
                   DST="ghcr.io/$GHCR_OWNER/$TARGET"
@@ -162,10 +186,10 @@ jobs:
                   exit 1
                   ;;
               esac
-          
+
               echo ">>> Syncing $SOURCE:$TAG -> $DST:$TAG ($REGISTRY)"
               skopeo copy "${args[@]}" "docker://$SOURCE:$TAG" "docker://$DST:$TAG"
-              echo "::notice title=Image Synced::$DST:$TAG"          
+              echo "::notice title=Image Synced::$DST:$TAG"
 
       - name: Summary
         run: |
@@ -176,3 +200,223 @@ jobs:
           echo "| Source | \`${{ steps.parse.outputs.source }}:${{ steps.parse.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Target | \`${{ steps.parse.outputs.target }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Registry | ${{ inputs.target_registry }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------- batch：读文件批量同步 + 磁盘空间管理 ----------------
+  sync-batch:
+    if: inputs.mode == 'batch'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    env:
+      IMAGES_FILE: ${{ inputs.images_file }}
+      MIN_FREE_GB: ${{ inputs.min_free_gb }}
+      REGISTRY: ${{ inputs.target_registry }}
+      # GHCR
+      GHCR_USER: ${{ github.actor }}
+      GHCR_PASS: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_OWNER: ${{ github.repository_owner }}
+      # Docker Hub
+      DOCKERHUB_USER: ${{ vars.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASS: ${{ secrets.DOCKERHUB_TOKEN }}
+      DOCKERHUB_NS: ${{ vars.DOCKERHUB_NAMESPACE }}
+      # Aliyun
+      ALIYUN_REGISTRY: ${{ vars.ALIYUN_REGISTRY }}
+      ALIYUN_USER: ${{ vars.ALIYUN_REGISTRY_USERNAME }}
+      ALIYUN_PASS: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+      ALIYUN_NS: ${{ vars.ALIYUN_NAMESPACE }}
+      # Huawei
+      HUAWEI_REGISTRY: ${{ vars.HUAWEI_REGISTRY }}
+      HUAWEI_USER: ${{ vars.HUAWEI_REGISTRY_USERNAME }}
+      HUAWEI_PASS: ${{ secrets.HUAWEI_REGISTRY_PASSWORD }}
+      HUAWEI_NS: ${{ vars.HUAWEI_NAMESPACE }}
+      # Tencent CNB
+      TENCENT_REGISTRY: ${{ vars.TENCENT_REGISTRY }}
+      TENCENT_USER: ${{ vars.TENCENT_REGISTRY_USERNAME }}
+      TENCENT_PASS: ${{ secrets.TENCENT_REGISTRY_PASSWORD }}
+      TENCENT_NS: ${{ vars.TENCENT_NAMESPACE }}
+      # TCR
+      TCR_USER: ${{ vars.TCR_USERNAME }}
+      TCR_PASS: ${{ secrets.TCR_PASSWORD }}
+      TCR_NS: ${{ vars.TCR_NAMESPACE }}
+      # Quay
+      QUAY_USER: ${{ vars.QUAY_USERNAME }}
+      QUAY_PASS: ${{ secrets.QUAY_PASSWORD }}
+      QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
+      QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Parse and sync
+        run: |
+          FILE="$IMAGES_FILE"
+          if [ ! -f "$FILE" ]; then
+            echo "::error::镜像列表文件不存在: $FILE"
+            exit 1
+          fi
+
+          COUNT=$(yq '.images | length' "$FILE")
+          if [ -z "$COUNT" ] || [ "$COUNT" = "0" ] || [ "$COUNT" = "null" ]; then
+            echo "::error::$FILE 中 images 为空或未定义"
+            exit 1
+          fi
+          echo ">>> 共 $COUNT 个镜像待同步 -> $REGISTRY"
+
+          mkdir -p /tmp/skopeo-tmp
+
+          # ---------- 磁盘空间检查与清理（不足才清理，幂等） ----------
+          ensure_disk_space() {
+            local need_kb=$(( MIN_FREE_GB * 1024 * 1024 ))
+            local avail_kb
+            avail_kb=$(df -k / --output=avail | tail -1 | tr -d ' ')
+            echo ">>> 可用磁盘: $(( avail_kb / 1024 / 1024 )) GB（阈值 ${MIN_FREE_GB} GB）"
+            if [ "$avail_kb" -ge "$need_kb" ]; then
+              return 0
+            fi
+            echo ">>> 低于阈值，清理 runner 临时空间..."
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                        /usr/local/share/boost /usr/share/swift /usr/local/.ghcup \
+                        "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" 2>/dev/null || true
+            sudo apt-get clean || true
+            docker system prune -af --volumes 2>/dev/null || true
+            rm -rf /tmp/skopeo-* 2>/dev/null || true
+            avail_kb=$(df -k / --output=avail | tail -1 | tr -d ' ')
+            echo ">>> 清理后可用: $(( avail_kb / 1024 / 1024 )) GB"
+            if [ "$avail_kb" -lt "$need_kb" ]; then
+              echo "::warning::清理后仍只有 $(( avail_kb / 1024 / 1024 )) GB，可能不足"
+            fi
+            return 0
+          }
+
+          # ---------- Quay 建仓（幂等） ----------
+          ensure_quay_repo() {
+            if [ "$REGISTRY" != "Quay.io" ]; then return 0; fi
+            local image="$1"
+            local status
+            status=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $QUAY_TOKEN" \
+              "https://quay.io/api/v1/repository/$QUAY_NS/$image")
+            if [ "$status" = "200" ]; then
+              echo ">>> Quay repo $QUAY_NS/$image 已存在"
+              return 0
+            fi
+            echo ">>> 创建 Quay repo $QUAY_NS/$image"
+            local resp http body
+            resp=$(curl -s -w "\n%{http_code}" -X POST \
+              -H "Authorization: Bearer $QUAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"repository\":\"$image\",\"namespace\":\"$QUAY_NS\",\"visibility\":\"public\",\"description\":\"$image container image\"}" \
+              "https://quay.io/api/v1/repository")
+            http=$(echo "$resp" | tail -1)
+            body=$(echo "$resp" | sed '$d')
+            echo ">>> Response ($http): $body"
+            if [ "$http" -ge 400 ]; then
+              echo ">>> Warning: 建仓失败，仍尝试推送"
+            fi
+            return 0
+          }
+
+          # ---------- 同步单个镜像 ----------
+          sync_one() {
+            local input="$1" target_override="$2"
+            local after="${input##*:}"
+            if [[ "$after" != *"/"* ]] && [[ "$after" != "$input" ]]; then
+              local src="${input%:*}" tag="$after"
+            else
+              local src="$input" tag="latest"
+            fi
+
+            local target="$target_override"
+            if [ -z "$target" ] || [ "$target" = "-" ]; then
+              target="${src##*/}"
+              target="${target#library:}"
+            fi
+
+            local dst
+            local args=(--all --retry-times 3 --src-no-creds)
+            case "$REGISTRY" in
+              GHCR)
+                dst="ghcr.io/$GHCR_OWNER/$target"
+                args+=(--dest-creds "$GHCR_USER:$GHCR_PASS") ;;
+              "阿里云 ACR")
+                dst="$ALIYUN_REGISTRY/$ALIYUN_NS/$target"
+                args+=(--dest-creds "$ALIYUN_USER:$ALIYUN_PASS") ;;
+              "华为云 SWR")
+                dst="$HUAWEI_REGISTRY/$HUAWEI_NS/$target"
+                args+=(--dest-creds "$HUAWEI_USER:$HUAWEI_PASS") ;;
+              "腾讯云 CNB")
+                dst="$TENCENT_REGISTRY/$TENCENT_NS/$target"
+                args+=(--dest-creds "$TENCENT_USER:$TENCENT_PASS") ;;
+              "Docker Hub")
+                dst="docker.io/$DOCKERHUB_NS/$target"
+                args+=(--dest-creds "$DOCKERHUB_USER:$DOCKERHUB_PASS") ;;
+              "腾讯云 TCR")
+                dst="ccr.ccs.tencentyun.com/$TCR_NS/$target"
+                args+=(--dest-creds "$TCR_USER:$TCR_PASS") ;;
+              "Quay.io")
+                dst="quay.io/$QUAY_NS/$target"
+                args+=(--dest-creds "$QUAY_USER:$QUAY_PASS") ;;
+              *)
+                echo "::error::未知 registry: $REGISTRY"
+                return 1 ;;
+            esac
+
+            ensure_quay_repo "$target" || true
+
+            echo ">>> 同步 $src:$tag -> $dst:$tag ($REGISTRY)"
+            if skopeo --tmpdir /tmp/skopeo-tmp copy "${args[@]}" "docker://$src:$tag" "docker://$dst:$tag"; then
+              echo "::notice title=Synced::$dst:$tag"
+              echo "${src}:${tag}|${target}|${REGISTRY}|✅" >> /tmp/sync-results.txt
+              return 0
+            else
+              echo "::error title=Sync Failed::${src}:${tag}"
+              echo "${src}:${tag}|${target}|${REGISTRY}|❌" >> /tmp/sync-results.txt
+              return 1
+            fi
+          }
+
+          : > /tmp/sync-results.txt
+          FAIL=0
+
+          # 兼容两种写法：纯字符串条目（nginx:1.25）或对象条目（source/target）
+          while IFS=$'\t' read -r src target; do
+            [ -z "$src" ] && continue
+            echo ""
+            echo "=============================="
+            ensure_disk_space
+            if ! sync_one "$src" "$target"; then
+              FAIL=$((FAIL+1))
+            fi
+            rm -rf /tmp/skopeo-tmp/* 2>/dev/null || true
+          done < <(yq '.images[] | "\((.source // .))\t(.target // "-")"' "$FILE")
+
+          # ---------- Summary ----------
+          {
+            echo "### 批量同步结果（$REGISTRY）"
+            echo ""
+            echo "| Source | Target | Registry | 状态 |"
+            echo "|--------|--------|----------|------|"
+            while IFS='|' read -r s t r st; do
+              [ -z "$s" ] && continue
+              echo "| ${s} | ${t} | ${r} | ${st} |"
+            done < /tmp/sync-results.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          TOTAL=$(wc -l < /tmp/sync-results.txt)
+          echo ">>> 完成：共 ${TOTAL} 个，失败 ${FAIL} 个"
+          if [ "$FAIL" -gt 0 ]; then
+            echo "::error::${FAIL} 个镜像同步失败"
+            exit 1
+          fi
