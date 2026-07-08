@@ -97,6 +97,7 @@ images:
     target: my-redis              # 对象写法：target 覆盖目标镜像名
   - source: ghcr.io/foo/bar:v1.2.0
     target: bar
+    tag: stable                   # 可选：覆盖目标标签（retag），拉 v1.2.0 推 stable
 ```
 
 2. Actions → Sync Docker Image → `mode=batch` → 选 `target_registry`（**整表共用一个仓库**）→ Run。

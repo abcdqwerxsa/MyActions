@@ -5,8 +5,10 @@
 #
 # 每个条目支持两种写法：
 #   1) 纯字符串：只给镜像引用，tag 跟随源、目标名取最后一段
-#   2) 对象：source 必填；target 可选（覆盖目标镜像名，默认取 source 最后一段，
-#      自动去掉 library: 前缀）
+#   2) 对象：source 必填；可选字段：
+#        target  覆盖目标镜像名（默认取 source 最后一段，自动去掉 library: 前缀）
+#        tag     覆盖目标标签 / retag（默认跟随源 tag）
+#                例如 source: nginx:1.25.3 + tag: stable → 拉 1.25.3，推 stable
 #
 # 源镜像须为公开可拉取（沿用 --src-no-creds）。单条失败不会中断整批。
 
@@ -17,6 +19,7 @@ images:
     target: my-redis              # 覆盖目标镜像名
   - source: ghcr.io/foo/bar:v1.2.0
     target: bar
+    tag: stable                   # 覆盖目标标签：拉 v1.2.0，推 stable
 
   # 纯字符串写法（等价于只写 source）
   # - hello-world:latest
