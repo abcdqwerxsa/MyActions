@@ -330,7 +330,7 @@ jobs:
 
           # ---------- 同步单个镜像 ----------
           sync_one() {
-            local input="$1" target_override="$2"
+            local input="$1" target_override="$2" tag_override="$3"
             local after="${input##*:}"
             if [[ "$after" != *"/"* ]] && [[ "$after" != "$input" ]]; then
               local src="${input%:*}" tag="$after"
@@ -342,6 +342,12 @@ jobs:
             if [ -z "$target" ] || [ "$target" = "-" ]; then
               target="${src##*/}"
               target="${target#library:}"
+            fi
+
+            # 目标标签：默认跟随源 tag；给出 tag 覆盖则 retag
+            local dest_tag="$tag"
+            if [ -n "$tag_override" ] && [ "$tag_override" != "-" ]; then
+              dest_tag="$tag_override"
             fi
 
             local dst
@@ -375,14 +381,14 @@ jobs:
 
             ensure_quay_repo "$target" || true
 
-            echo ">>> 同步 $src:$tag -> $dst:$tag ($REGISTRY)"
-            if skopeo --tmpdir /tmp/skopeo-tmp copy "${args[@]}" "docker://$src:$tag" "docker://$dst:$tag"; then
-              echo "::notice title=Synced::$dst:$tag"
-              echo "${src}:${tag}|${target}|${REGISTRY}|✅" >> /tmp/sync-results.txt
+            echo ">>> 同步 $src:$tag -> $dst:$dest_tag ($REGISTRY)"
+            if skopeo --tmpdir /tmp/skopeo-tmp copy "${args[@]}" "docker://$src:$tag" "docker://$dst:$dest_tag"; then
+              echo "::notice title=Synced::$dst:$dest_tag"
+              echo "${src}:${tag}|${target}:${dest_tag}|${REGISTRY}|✅" >> /tmp/sync-results.txt
               return 0
             else
-              echo "::error title=Sync Failed::${src}:${tag}"
-              echo "${src}:${tag}|${target}|${REGISTRY}|❌" >> /tmp/sync-results.txt
+              echo "::error title=Sync Failed::${src}:${tag} -> ${dst}:${dest_tag}"
+              echo "${src}:${tag}|${target}:${dest_tag}|${REGISTRY}|❌" >> /tmp/sync-results.txt
               return 1
             fi
           }
@@ -390,17 +396,17 @@ jobs:
           : > /tmp/sync-results.txt
           FAIL=0
 
-          # 兼容两种写法：纯字符串条目（nginx:1.25）或对象条目（source/target）
-          while IFS=$'\t' read -r src target; do
+          # 兼容两种写法：纯字符串条目（nginx:1.25）或对象条目（source/target/tag）
+          while IFS=$'\t' read -r src target tag_override; do
             [ -z "$src" ] && continue
             echo ""
             echo "=============================="
             ensure_disk_space
-            if ! sync_one "$src" "$target"; then
+            if ! sync_one "$src" "$target" "$tag_override"; then
               FAIL=$((FAIL+1))
             fi
             rm -rf /tmp/skopeo-tmp/* 2>/dev/null || true
-          done < <(yq '.images[] | "\((.source // .))\t(.target // "-")"' "$FILE")
+          done < <(yq '.images[] | "\((.source // .))\t(.target // "-")\t(.tag // "-")"' "$FILE")
 
           # ---------- Summary ----------
           {
