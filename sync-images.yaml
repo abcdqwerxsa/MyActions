@@ -17,9 +17,9 @@ images:
   - source: registry.k8s.io/kueue/kueue:v0.8.1
   - source: gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0
   - source: docker.io/kubeflow/mpi-operator:v0.6.0
-  - docker.io/kubeflow/mpi-kubectl:v0.6.0
-  - rancher/local-path-provisioner:v0.0.28
-  - docker.io/mpiuniverse/mpich-ubuntu:latest
+  - source: docker.io/kubeflow/mpi-kubectl:v0.6.0
+  - source: rancher/local-path-provisioner:v0.0.28
+  - source: docker.io/mpiuniverse/mpich-ubuntu:latest
 
   # 纯字符串写法（等价于只写 source）
   # - hello-world:latest
