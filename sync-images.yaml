@@ -14,12 +14,12 @@
 
 images:
   # 对象写法
-  - source: nginx:1.25.3
-  - source: redis:7.2
-    target: my-redis              # 覆盖目标镜像名
-  - source: ghcr.io/foo/bar:v1.2.0
-    target: bar
-    tag: stable                   # 覆盖目标标签：拉 v1.2.0，推 stable
+  - source: registry.k8s.io/kueue/kueue:v0.8.1
+  - source: gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0
+  - source: docker.io/kubeflow/mpi-operator:v0.6.0
+  - docker.io/kubeflow/mpi-kubectl:v0.6.0
+  - rancher/local-path-provisioner:v0.0.28
+  - docker.io/mpiuniverse/mpich-ubuntu:latest
 
   # 纯字符串写法（等价于只写 source）
   # - hello-world:latest
