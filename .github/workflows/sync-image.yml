@@ -406,7 +406,7 @@ jobs:
               FAIL=$((FAIL+1))
             fi
             rm -rf /tmp/skopeo-tmp/* 2>/dev/null || true
-          done < <(yq '.images[] | "\((.source // .))\t(.target // "-")\t(.tag // "-")"' "$FILE")
+          done < <(yq -r '.images[] | [(.source // .), (.target // "-"), (.tag // "-")] | @tsv' "$FILE")
 
           # ---------- Summary ----------
           {
