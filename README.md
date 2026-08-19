@@ -59,7 +59,11 @@ tags: latest,v1.0
 
 进入 Actions → Build and Push Docker Image → Run workflow，勾选目标仓库即可。
 
-也可通过 `dockerfile_url` 参数指定远程 Dockerfile 地址。
+也可通过 `dockerfile_url` 参数指定远程 Dockerfile 地址，或通过 `git_repo_url` 直接构建远程 Git 仓库中的 Dockerfile：
+
+- **完整克隆**（保留全部提交历史与 tags，`--filter=blob:none` 减小传输）——部分项目（如 casdoor）构建时会用 go-git 读取 git 历史计算版本号，浅克隆会导致 `object not found` 构建失败。
+- `git_repo_ref` 支持分支 / tag / commit，留空则使用仓库默认分支。
+- `git_repo_path` 指定 Dockerfile 所在子目录，`build_context_path` 指定构建上下文根。
 
 ## Workflow 流程
 

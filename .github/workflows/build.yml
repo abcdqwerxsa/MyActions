@@ -12,9 +12,8 @@ on:
         required: false
         type: string
       git_repo_ref:
-        description: "Git branch/tag/commit (default: main)"
+        description: "Git branch/tag/commit (default: repo default branch)"
         required: false
-        default: "main"
         type: string
       git_repo_path:
         description: "Subdirectory containing Dockerfile (default: repo root)"
@@ -162,8 +161,24 @@ jobs:
           GIT_REPO_PATH="${{ needs.prepare.outputs.git_repo_path }}"
           BUILD_CTX_PATH="${{ needs.prepare.outputs.build_context_path }}"
 
-          echo ">>> Cloning $GIT_REPO_URL @ ${GIT_REPO_REF:-main}"
-          git clone --depth 1 --branch "${GIT_REPO_REF:-main}" "$GIT_REPO_URL" /tmp/build-repo
+          # Full-history clone with tags: some Dockerfiles run tests/build
+          # scripts that read git history at build time (e.g. casdoor's
+          # TestGetVersionInfo walks commits via go-git and fails with
+          # "object not found" on a --depth 1 clone).
+          # --filter=blob:none keeps the transfer small; fall back to plain
+          # clone if the server doesn't support partial clone.
+          echo ">>> Cloning $GIT_REPO_URL"
+          if ! git clone --filter=blob:none "$GIT_REPO_URL" /tmp/build-repo; then
+            echo ">>> blobless clone failed, retrying with plain clone"
+            rm -rf /tmp/build-repo
+            git clone "$GIT_REPO_URL" /tmp/build-repo
+          fi
+
+          # Checkout requested branch/tag/commit (empty = repo default branch)
+          if [ -n "$GIT_REPO_REF" ]; then
+            echo ">>> Checking out: $GIT_REPO_REF"
+            git -C /tmp/build-repo checkout "$GIT_REPO_REF"
+          fi
 
           # Build context: where Docker can access files from
           BUILD_CTX="/tmp/build-repo"
