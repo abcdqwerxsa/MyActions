@@ -23,6 +23,18 @@ on:
         description: "Build context root (default: repo root). Dockerfile can access files from this path."
         required: false
         type: string
+      platforms:
+        description: "Target platforms (amd64+arm64 / amd64 / arm64)"
+        type: choice
+        default: amd64+arm64
+        options:
+          - amd64+arm64
+          - amd64
+          - arm64
+      build_args:
+        description: "Build args, comma-separated KEY=VALUE (e.g. VERSION=1.0,DEBUG=false)"
+        required: false
+        type: string
       image_name:
         description: "Image name (e.g. my-image or owner/my-image)"
         required: true
@@ -76,6 +88,10 @@ jobs:
       git_repo_ref: ${{ steps.config.outputs.git_repo_ref }}
       git_repo_path: ${{ steps.config.outputs.git_repo_path }}
       build_context_path: ${{ steps.config.outputs.build_context_path }}
+      matrix: ${{ steps.config.outputs.matrix }}
+      suffixes: ${{ steps.config.outputs.suffixes }}
+      build_args: ${{ steps.config.outputs.build_args }}
+      run_started_epoch: ${{ steps.config.outputs.run_started_epoch }}
     permissions:
       contents: read
 
@@ -114,6 +130,43 @@ jobs:
           done
           TAG_LIST=$(echo -e "$TAG_LIST" | sed '/^$/d')
 
+          # Build matrix from platform selection
+          PLATFORMS="${{ inputs.platforms }}"
+          MATRIX_JSON='{"include":['
+          SUFFIXES=""
+          SEP=""
+          for arch in ${PLATFORMS/+/' '}; do
+            case "$arch" in
+              amd64) RUNNER="ubuntu-24.04" ;;
+              arm64) RUNNER="ubuntu-24.04-arm" ;;
+              *)
+                echo "::error::Unsupported arch: $arch"
+                exit 1
+                ;;
+            esac
+            MATRIX_JSON="${MATRIX_JSON}${SEP}{\"arch\":\"${arch}\",\"runner\":\"${RUNNER}\"}"
+            SEP=","
+            SUFFIXES="${SUFFIXES} ${arch}"
+          done
+          MATRIX_JSON="${MATRIX_JSON}]}"
+          SUFFIXES="${SUFFIXES# }"
+          echo ">>> Platforms: $PLATFORMS (suffixes: $SUFFIXES)"
+
+          # Build args: comma-separated KEY=VALUE -> newline list for build-push-action
+          BUILD_ARGS_INPUT="${{ inputs.build_args }}"
+          BUILD_ARGS_LIST=""
+          if [ -n "$BUILD_ARGS_INPUT" ]; then
+            IFS=',' read -ra BA_ARRAY <<< "$BUILD_ARGS_INPUT"
+            for ba in "${BA_ARRAY[@]}"; do
+              ba=$(echo "$ba" | xargs)
+              [ -z "$ba" ] && continue
+              BUILD_ARGS_LIST="${BUILD_ARGS_LIST}${ba}\n"
+            done
+            BUILD_ARGS_LIST=$(echo -e "$BUILD_ARGS_LIST" | sed '/^$/d')
+            echo ">>> Build args:"
+            echo -e "$BUILD_ARGS_LIST"
+          fi
+
           echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
           # Short name: strip owner prefix for non-GHCR registries
           echo "short_image_name=${IMAGE_NAME##*/}" >> "$GITHUB_OUTPUT"
@@ -125,18 +178,21 @@ jobs:
           echo "git_repo_ref=${{ inputs.git_repo_ref }}" >> "$GITHUB_OUTPUT"
           echo "git_repo_path=${{ inputs.git_repo_path }}" >> "$GITHUB_OUTPUT"
           echo "build_context_path=${{ inputs.build_context_path }}" >> "$GITHUB_OUTPUT"
+          echo "matrix=${MATRIX_JSON}" >> "$GITHUB_OUTPUT"
+          echo "suffixes=$SUFFIXES" >> "$GITHUB_OUTPUT"
+          {
+            echo "build_args<<EOF"
+            echo -e "$BUILD_ARGS_LIST"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          # Run start time: used by cleanup-ghcr to identify versions from this run
+          date -u +%s | sed 's/^/run_started_epoch=/' >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
     strategy:
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            suffix: amd64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            suffix: arm64
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -216,7 +272,8 @@ jobs:
           push: true
           tags: |
             ${{ needs.prepare.outputs.tags }}
-            ${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}:${{ github.sha }}-${{ matrix.suffix }}
+            ${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}:${{ github.sha }}-${{ matrix.arch }}
+          build-args: ${{ needs.prepare.outputs.build_args }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
 
@@ -242,8 +299,14 @@ jobs:
         run: |
           IMAGE="${{ env.GHCR_REGISTRY }}/${{ needs.prepare.outputs.image_name }}"
 
+          # NOTE: the per-arch tags (${sha}-amd64/-arm64) are intentionally kept
+          # after the merge. GHCR package versions are manifest-scoped and the
+          # manifest list references its children by digest — deleting a child
+          # version breaks pulls with "manifest unknown" (see
+          # actions/delete-package-versions#162). Stale versions are pruned
+          # safely by the "GHCR Retention Cleanup" workflow instead.
           SOURCES=""
-          for suffix in amd64 arm64; do
+          for suffix in ${{ needs.prepare.outputs.suffixes }}; do
             TAG="${IMAGE}:${{ github.sha }}-${suffix}"
             echo ">>> Adding: $TAG"
             SOURCES="$SOURCES $TAG"
@@ -519,20 +582,70 @@ jobs:
     needs: [prepare, sync-aliyun, sync-huawei, sync-tencent, sync-dockerhub, sync-tcr, sync-quay]
     if: inputs.push_ghcr == false
     permissions:
-      contents: read
       packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Remove temporary GHCR image
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ needs.prepare.outputs.short_image_name }}
+          RUN_STARTED_EPOCH: ${{ needs.prepare.outputs.run_started_epoch }}
+          PUSHED_TAGS: ${{ needs.prepare.outputs.tags }}
+          TEMP_SUFFIXES: ${{ needs.prepare.outputs.suffixes }}
+          BUILD_SHA: ${{ github.sha }}
         run: |
-          IMAGE="${{ needs.prepare.outputs.image_name }}"
-          VERSION="${{ github.sha }}"
-          echo ">>> Cleaning up temporary GHCR image: $IMAGE"
-          for tag in $(echo '${{ needs.prepare.outputs.tags }}' | grep -oP '(?<=:)[^\n]+'); do
-            tag=$(echo "$tag" | xargs)
-            [ -z "$tag" ] && continue
-            echo ">>> Deleting tag: $tag"
-            curl -s -X DELETE \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/user/packages/container/${IMAGE#*/}/versions?tag=${tag}" || true
-          done
+          # GHCR was only used as the build intermediate + sync source (push_ghcr
+          # unchecked): remove everything this run pushed.
+          #
+          # Deletion targets (a version matches if ANY of these):
+          #   1. carries one of this run's user tags (the merged manifest lists)
+          #   2. carries a ${sha}-${arch} temp tag (the per-arch children)
+          #   3. untagged AND created after this run started (old lists whose
+          #      tags were taken over by this run's merge)
+          # Older untagged leftovers are left to the "GHCR Retention Cleanup"
+          # workflow — deleting blind would risk breaking other multi-arch tags.
+          IMAGE_LC=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+
+          # Package API base: /user for personal accounts, /orgs/{owner} otherwise
+          if gh api "/user/packages/container/${IMAGE_LC}" > /dev/null 2>&1; then
+            BASE="/user/packages/container/${IMAGE_LC}"
+          elif gh api "/orgs/${OWNER}/packages/container/${IMAGE_LC}" > /dev/null 2>&1; then
+            BASE="/orgs/${OWNER}/packages/container/${IMAGE_LC}"
+          else
+            echo "::warning::GHCR package ${IMAGE_LC} not found, nothing to clean"
+            exit 0
+          fi
+          echo ">>> Package API base: $BASE"
+
+          USER_TAGS=$(echo "$PUSHED_TAGS" | grep -oP '(?<=:)[^\s]+' | xargs echo)
+          echo ">>> User tags: ${USER_TAGS:-none}"
+          echo ">>> Temp tags: ${BUILD_SHA}-{${TEMP_SUFFIXES// /,}}"
+
+          gh api --paginate "${BASE}/versions" | jq -s 'add' > /tmp/versions.json
+          echo ">>> Total versions in package: $(jq 'length' /tmp/versions.json)"
+
+          jq -r --argjson started "$RUN_STARTED_EPOCH" --arg sha "$BUILD_SHA" \
+            --arg user_tags " $USER_TAGS " \
+            '.[] | . as $v |
+             ($v.metadata.container.tags // []) as $tags |
+             select(
+               any($tags[]; . as $t | $user_tags | contains(" " + $t + " "))
+               or any($tags[]; startswith($sha + "-"))
+               or (($tags | length == 0) and (($v.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) > $started))
+             )
+             | [$v.id, $v.created_at, ($tags | join(","))] | @tsv' \
+            /tmp/versions.json > /tmp/to-delete.tsv
+
+          COUNT=$(wc -l < /tmp/to-delete.tsv)
+          if [ "$COUNT" -eq 0 ]; then
+            echo ">>> Nothing to delete"
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r vid vcreated vtags; do
+            echo ">>> Deleting version ${vid} (tags: ${vtags:-untagged}, created: ${vcreated})"
+            gh api -X DELETE "${BASE}/versions/${vid}"
+          done < /tmp/to-delete.tsv
+
+          echo ">>> Cleaned up ${COUNT} versions from GHCR"

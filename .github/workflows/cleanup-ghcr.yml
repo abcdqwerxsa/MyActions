@@ -1,0 +1,204 @@
+name: GHCR Retention Cleanup
+
+# Safely prunes stale GHCR package versions left behind by the build workflow:
+# every build pushes per-arch child manifests (${sha}-amd64/-arm64) that are
+# referenced (by digest) by the multi-arch manifest list. GHCR offers no
+# tag-only deletion, and deleting a referenced child breaks pulls with
+# "manifest unknown" (actions/delete-package-versions#162) — so children must
+# be kept for as long as their parent tag lives.
+#
+# Keep rules (a version is KEPT if any matches):
+#   1. it carries a "real" tag (anything not a ${sha}-<arch> temp tag)
+#      -> live manifest list / pinned tag
+#   2. created within min_age_hours of now    -> recent/in-flight builds
+#   3. carries only temp tags or none, and is created within
+#      ±correlation_hours of a real-tagged version
+#      -> per-arch children of a still-live list (same build, small skew
+#         between arch job finish and manifest merge)
+# Everything else (superseded untagged lists, children of long-dead tags,
+# old ${sha}-arch leftovers) is deleted.
+#
+# NOTE: correlation is a heuristic — builds of different tags less than
+# correlation_hours apart over-keep each other's stale versions (harmless);
+# err on the side of keeping.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # weekly, Monday 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: "Package name (short name, e.g. my-image). Empty = all container packages"
+        required: false
+        type: string
+      min_age_hours:
+        description: "Versions younger than this are always kept (in-flight builds)"
+        required: false
+        type: string
+        default: "24"
+      correlation_hours:
+        description: "Untagged versions within ±N hours of a tagged version are kept (manifest children)"
+        required: false
+        type: string
+        default: "3"
+      dry_run:
+        description: "Only log what would be deleted"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ghcr-retention-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER: ${{ github.repository_owner }}
+      PKG_INPUT: ${{ inputs.package_name }}
+      MIN_AGE_HOURS: ${{ inputs.min_age_hours || '24' }}
+      CORRELATION_HOURS: ${{ inputs.correlation_hours || '3' }}
+      # Real deletion only when: manual run with dry_run unchecked, or a
+      # scheduled run AND repo variable RETENTION_AUTO_DELETE=true (opt-in).
+      DRY_RUN: ${{ (github.event_name == 'schedule' && vars.RETENTION_AUTO_DELETE != 'true') || inputs.dry_run }}
+    steps:
+      - name: Resolve namespace and collect target packages
+        run: |
+          if [ -n "$PKG_INPUT" ]; then
+            # Probe the specific package to find its namespace
+            PKG=$(echo "$PKG_INPUT" | tr '[:upper:]' '[:lower:]')
+            if gh api "/user/packages/container/${PKG}" > /dev/null 2>&1; then
+              BASE="/user"
+            elif gh api "/orgs/${OWNER}/packages/container/${PKG}" > /dev/null 2>&1; then
+              BASE="/orgs/${OWNER}"
+            else
+              echo "::error::GHCR package not found: ${PKG}"
+              exit 1
+            fi
+            echo "$PKG" > /tmp/packages.txt
+          else
+            # A repo's GITHUB_TOKEN cannot list an unrelated user's personal
+            # packages, so this probe only succeeds for personal accounts.
+            if gh api "/user/packages?package_type=container&per_page=1" > /dev/null 2>&1; then
+              BASE="/user"
+            else
+              BASE="/orgs/${OWNER}"
+            fi
+            gh api --paginate "${BASE}/packages?package_type=container" \
+              | jq -r '.[].name' | sort -u > /tmp/packages.txt
+          fi
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          echo ">>> Namespace base: $BASE"
+          COUNT=$(wc -l < /tmp/packages.txt)
+          if [ "$COUNT" -eq 0 ]; then
+            echo ">>> No container packages found, nothing to do"
+            exit 0
+          fi
+          echo ">>> Packages to clean (${COUNT}):"
+          cat /tmp/packages.txt
+
+      - name: Prune stale versions
+        run: |
+          NOW=$(date -u +%s)
+          {
+            echo "### GHCR Retention Cleanup"
+            echo ""
+            echo "Rules: keep tagged / younger than ${MIN_AGE_HOURS}h / within ±${CORRELATION_HOURS}h of a tagged version"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          TOTAL_DELETED=0
+          TOTAL_KEPT=0
+
+          while read -r PKG; do
+            [ -z "$PKG" ] && continue
+            echo ""
+            echo "=== Package: $PKG ==="
+            PKG_BASE="${BASE}/packages/container/${PKG}"
+
+            # id <tab> created_epoch <tab> all_tags(csv) <tab> real_tags(csv)
+            # "real" tag = not a ${sha}-<arch> build temp tag; those never
+            # move once pushed, so temp-tagged children of dead builds must be
+            # matched by creation-time correlation instead.
+            # Nullable columns go last: tab is IFS whitespace, so an empty
+            # MIDDLE field would collapse and shift the following columns.
+            gh api --paginate "${PKG_BASE}/versions" \
+              | jq -rs 'add // [] | .[] |
+                 . as $v |
+                 ($v.metadata.container.tags // []) as $all |
+                 [$all[] | select(test("^[0-9a-f]{40}-(amd64|arm64)$") | not)] as $real |
+                 [$v.id, ($v.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601), ($all | join(",")), ($real | join(","))] | @tsv' \
+              > /tmp/versions.tsv
+            VERSION_COUNT=$(wc -l < /tmp/versions.tsv)
+            echo ">>> Versions: $VERSION_COUNT"
+
+            # Epochs of versions carrying real (non-temp) tags — live lists
+            TAGGED_EPOCHS=$(awk -F'\t' '$4 != "" {print $2}' /tmp/versions.tsv)
+
+            : > /tmp/plan-$PKG.tsv
+            while IFS=$'\t' read -r VID VEPOCH VALLTAGS VREALTAGS; do
+              [ -z "$VID" ] && continue
+              KEEP=0; REASON=""
+              if [ -n "$VREALTAGS" ]; then
+                KEEP=1; REASON="tagged (${VREALTAGS})"
+              elif [ $(( NOW - VEPOCH )) -lt $(( MIN_AGE_HOURS * 3600 )) ]; then
+                KEEP=1; REASON="recent (<${MIN_AGE_HOURS}h)"
+              else
+                # child candidate (untagged or temp-only): keep if near a live list
+                for TE in $TAGGED_EPOCHS; do
+                  DIFF=$(( TE - VEPOCH )); [ "$DIFF" -lt 0 ] && DIFF=$(( -DIFF ))
+                  if [ "$DIFF" -lt $(( CORRELATION_HOURS * 3600 )) ]; then
+                    KEEP=1; REASON="child of tagged version (Δ=$(( DIFF / 60 ))min)"
+                    break
+                  fi
+                done
+              fi
+              if [ "$KEEP" -eq 1 ]; then
+                echo -e "${VID}\tkeep\t${REASON}\t${VALLTAGS}" >> /tmp/plan-$PKG.tsv
+              else
+                echo -e "${VID}\tdelete\tstale\t${VALLTAGS}" >> /tmp/plan-$PKG.tsv
+              fi
+            done < /tmp/versions.tsv
+
+            KEPT=$(grep -c $'\tkeep\t' /tmp/plan-$PKG.tsv || true)
+            STALE=$(grep -c $'\tdelete\t' /tmp/plan-$PKG.tsv || true)
+            TOTAL_KEPT=$((TOTAL_KEPT + KEPT))
+            TOTAL_DELETED=$((TOTAL_DELETED + STALE))
+            echo ">>> Plan: keep ${KEPT}, delete ${STALE}"
+
+            {
+              echo "#### ${PKG}"
+              echo ""
+              echo "| Version ID | Action | Reason | Tags |"
+              echo "|------------|--------|--------|------|"
+              while IFS=$'\t' read -r VID ACT REASON VTAGS; do
+                [ -z "$VID" ] && continue
+                echo "| ${VID} | ${ACT} | ${REASON} | ${VTAGS:-untagged} |"
+              done < /tmp/plan-$PKG.tsv
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$STALE" -eq 0 ]; then
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo ">>> [dry-run] Would delete ${STALE} versions:"
+              grep $'\tdelete\t' /tmp/plan-$PKG.tsv
+            else
+              while IFS=$'\t' read -r VID ACT REASON VTAGS; do
+                [ "$ACT" = "delete" ] || continue
+                echo ">>> Deleting version ${VID} (${VTAGS:-untagged})"
+                gh api -X DELETE "${PKG_BASE}/versions/${VID}"
+              done < /tmp/plan-$PKG.tsv
+              echo ">>> Deleted ${STALE} versions"
+            fi
+          done < /tmp/packages.txt
+
+          {
+            echo "---"
+            echo "**Total:** kept ${TOTAL_KEPT}, deleted ${TOTAL_DELETED}$([ "$DRY_RUN" = "true" ] && echo ' (dry-run, nothing actually deleted)')"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo ">>> Done: kept ${TOTAL_KEPT}, deleted ${TOTAL_DELETED} (dry_run=${DRY_RUN})"

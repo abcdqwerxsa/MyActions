@@ -18,20 +18,23 @@ GitHub Actions workflow，支持多架构构建并推送到多个容器镜像仓
 - `amd64`
 - `arm64`
 
+触发构建时通过 `platforms` 选择：`amd64+arm64`（默认，双架构并行构建）/ `amd64` / `arm64`。部分项目没有 arm64 支持，选单架构可避免无谓的失败构建。
+
 构建完成后自动创建多架构 manifest，拉取时自动匹配当前平台。
+
+### Build args
+
+`build_args` 输入支持向 Dockerfile 传递构建参数，逗号分隔的 `KEY=VALUE`：
+
+```
+VERSION=1.2.3,DEBUG=false
+```
 
 ## 使用方式
 
-### 1. 配置 `image-config.yaml`
+### 1. 配置 Secrets / Variables
 
-```yaml
-image_name: cloud-browser-slim
-tags: latest,v1.0
-```
-
-### 2. 配置 Secrets / Variables
-
-在 GitHub 仓库 Settings → Secrets and variables → Actions 中配置：
+在 GitHub 仓库 Settings → Secrets and variables → Actions 中配置（按需，只配用到的仓库即可）：
 
 | 类型 | 名称 | 用途 |
 |------|------|------|
@@ -54,10 +57,15 @@ tags: latest,v1.0
 | Variable | `TENCENT_NAMESPACE` | 腾讯云 CNB 命名空间 |
 | Variable | `TENCENT_REGISTRY_USERNAME` | 腾讯云 CNB 用户名 |
 | Secret | `TENCENT_REGISTRY_PASSWORD` | 腾讯云 CNB 密码 |
+| Variable | `QUAY_NAMESPACE` | Quay.io 命名空间 |
+| Variable | `QUAY_USERNAME` | Quay.io 用户名 |
+| Secret | `QUAY_PASSWORD` | Quay.io 密码（skopeo 推送用） |
+| Secret | `QUAY_TOKEN` | Quay.io API Token（自动建仓用） |
+| Variable | `RETENTION_AUTO_DELETE` | 设为 `true` 时，定时清理才会真实删除（见下文 GHCR Retention Cleanup） |
 
-### 3. 触发构建
+### 2. 触发构建
 
-进入 Actions → Build and Push Docker Image → Run workflow，勾选目标仓库即可。
+进入 Actions → Build and Push Docker Image → Run workflow，填写 `image_name` / `image_tags`，选择 `platforms`（默认双架构），按需填 `build_args`，勾选目标仓库即可（镜像名与 tag 均通过表单输入，`image-config.yaml` 已不再被 workflow 读取，可删除）。
 
 也可通过 `dockerfile_url` 参数指定远程 Dockerfile 地址，或通过 `git_repo_url` 直接构建远程 Git 仓库中的 Dockerfile：
 
@@ -68,18 +76,41 @@ tags: latest,v1.0
 ## Workflow 流程
 
 ```
-prepare → build (amd64 + arm64 并行) → merge (多架构 manifest)
+prepare → build (按 platforms 并行) → merge (多架构 manifest)
                                          ↓
                               sync-aliyun (可选)
                               sync-huawei (可选)
                               sync-tencent-cnb (可选)
                               sync-dockerhub (可选)
+                              sync-tcr (可选)
+                              sync-quay (可选)
                                          ↓
                               cleanup-ghcr (未勾选 GHCR 时清理)
 ```
 
 - **GHCR / TCR**：在 build 阶段直接推送，速度快
 - **其他仓库**：构建完成后通过 skopeo 从 GHCR 同步，支持 `--all` 多架构复制
+- **cleanup-ghcr**：未勾选 GHCR 时，构建结束后把本次推到 GHCR 的版本（用户 tag、`${sha}-amd64`/`${sha}-arm64` 临时 tag、本次运行中被顶替为 untagged 的旧版本）通过 API 逐个删除
+
+## GHCR Retention Cleanup（GHCR 版本保留清理）
+
+多架构构建会在 GHCR 留下 `${sha}-amd64` / `${sha}-arm64` 临时子 manifest，它们被 manifest list 按 digest 引用，**不能随手删**（删了会导致拉取报 `manifest unknown`），因此长期累积。`GHCR Retention Cleanup` workflow（每周一 04:17 UTC 定时，也可手动触发）负责安全地清理这些陈旧版本：
+
+**保留规则**（满足任一即保留）：
+
+1. 带有非临时 tag（即不是 `${sha}-<arch>` 形式）——现役 manifest list / 固定版本 tag
+2. 创建时间在 `min_age_hours`（默认 24h）内——近期/进行中的构建
+3. 只有临时 tag 或无 tag，且创建时间与某个带真实 tag 的版本相差 ±`correlation_hours`（默认 3h）内——现役 list 的子 manifest
+
+其余（被顶替的旧 list、早已无引用的子 manifest、历史临时 tag）删除。
+
+**使用**：
+
+- 手动触发时 `dry_run` 默认开启，先跑一次预览 Summary 中的保留/删除计划，确认无误后再取消勾选执行真实删除
+- 定时运行默认**只出报告不删除**；在仓库 Variables 里设置 `RETENTION_AUTO_DELETE=true` 后，定时运行才会真实删除
+- `package_name` 留空 = 清理账号/组织下全部容器镜像包
+
+> ⚠️ 清理会删除陈旧的 untagged 版本；如果有消费方按 digest 固定引用（`image@sha256:...`）旧版本，请不要开启自动删除，或调大 `min_age_hours`。
 
 ## Sync Docker Image（已有镜像分发到各仓库）
 
