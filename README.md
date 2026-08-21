@@ -141,3 +141,45 @@ images:
 - **磁盘管理**：镜像多时，每条同步前检查可用磁盘，低于 `min_free_gb`（默认 `5` GB）会自动清理 runner 临时空间（dotnet/android/ghc/boost 等预装大目录 + docker prune + skopeo tmp）。
 - **容错**：源须公开可拉取；单条失败不中断整批，全部跑完后若有失败才标记失败，并在 Summary 输出逐条状态表。
 - **支持的目标仓库**：Quay.io / 阿里云 ACR / 华为云 SWR / 腾讯云 CNB / Docker Hub / 腾讯云 TCR / GHCR（需在 Secrets/Variables 配好对应凭据，见 `SECRETS.md`；Quay 首次推送会自动建仓）。
+
+## Sync to CNB（仓库 / Release 制品同步到国内）
+
+可复用工作流，把任意 GitHub 仓库的**全部分支 + 标签**和 **Release 制品**（名称、正文、预发布标记、附件）同步到 [cnb.cool](https://cnb.cool)。参考 TencentCloud/CubeSandbox 的做法做了通用化：原生 git push 做仓库镜像 + [`git-cnb`](https://cnb.cool/looc/git-cnb) CLI 传制品，无三方容器依赖。
+
+### 1. 前置条件
+
+| 项目 | 说明 |
+|------|------|
+| CNB 仓库 | 在 cnb.cool 建好目标仓库（slug 默认与 GitHub 同名，不同名用 `cnb_repo` 指定） |
+| Secret | 源仓库配 `CNB_TOKEN`（cnb.cool → 设置 → 访问令牌，需推送/制品权限） |
+
+### 2. 在源仓库添加调用工作流
+
+`.github/workflows/sync-to-cnb.yml`：
+
+```yaml
+name: Sync to CNB
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    uses: abcdqwerxsa/MyActions/.github/workflows/sync-to-cnb.yml@main
+    secrets:
+      cnb_token: ${{ secrets.CNB_TOKEN }}
+```
+
+### 3. 可选 inputs
+
+| Input | 默认 | 说明 |
+|-------|------|------|
+| `cnb_repo` | `github.repository` | CNB 目标 slug（CNB 用户名与 GitHub 不同时必填） |
+| `sync_git` | `true` | 同步全部分支 + 标签（不推 `refs/pull/*`） |
+| `sync_assets` | `true` | 同步 Release 元数据 + 附件（非 tag 事件自动跳过） |
+| `release_tag` | 自动推断 | 手动指定要同步的 release 标签（补传旧版本时用） |
+
+行为要点：仓库镜像与制品同步幂等可重跑；CNB 已存在的 release 保留原元数据不覆盖；同一 ref 的并发运行自动排队。

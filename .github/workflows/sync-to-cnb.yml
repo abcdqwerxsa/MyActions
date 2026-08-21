@@ -1,0 +1,184 @@
+name: Sync to CNB
+
+# 通用 GitHub → CNB(cnb.cool) 同步：整个仓库(分支+标签) + Release 制品。
+# 参考 TencentCloud/CubeSandbox 的 sync-to-cnb.yml，做了通用化裁剪：
+#   - 去掉 workflow_run tag 解析（调用方直接在 release 事件里触发）
+#   - 去掉中国区 ARC runner（上传速度优化，非必需）
+#   - 去掉 tencentcom/git-sync 容器，改用原生 git push（少一个三方依赖）
+#
+# 在任意仓库中使用（caller workflow）：
+#   name: Sync to CNB
+#   on:
+#     push:
+#       branches: [main]
+#       tags: ['*']
+#     release:
+#       types: [published]
+#   jobs:
+#     sync:
+#       uses: abcdqwerxsa/MyActions/.github/workflows/sync-to-cnb.yml@main
+#       secrets:
+#         cnb_token: ${{ secrets.CNB_TOKEN }}
+#
+# 前置条件：
+#   1. 在 cnb.cool 创建同名仓库（或通过 cnb_repo 指定目标 slug）
+#   2. 在源仓库配好 Secret CNB_TOKEN（cnb.cool → 设置 → 访问令牌）
+
+on:
+  workflow_call:
+    inputs:
+      cnb_repo:
+        description: "CNB 目标仓库 slug（默认与 GitHub 仓库同名，如 owner/repo）"
+        type: string
+        default: ''
+      sync_git:
+        description: "同步整个仓库（全部分支 + 标签到 CNB）"
+        type: boolean
+        default: true
+      sync_assets:
+        description: "同步 Release 制品（名称/正文/预发布标记 + 附件）"
+        type: boolean
+        default: true
+      release_tag:
+        description: "要同步的 release 标签（默认从 refs/tags/ 事件自动推断）"
+        type: string
+        default: ''
+
+    secrets:
+      cnb_token:
+        description: "CNB 访问令牌"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-to-cnb-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CNB_DOMAIN: cnb.cool
+  CNB_REPO_SLUG: ${{ inputs.cnb_repo || github.repository }}
+
+jobs:
+  git_sync:
+    if: inputs.sync_git
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push all branches and tags to CNB
+        env:
+          CNB_TOKEN: ${{ secrets.cnb_token }}
+        run: |
+          set -euo pipefail
+          git remote add cnb "https://cnb:${CNB_TOKEN}@${CNB_DOMAIN}/${CNB_REPO_SLUG}.git"
+          # 只镜像分支和标签，不推 refs/pull/* 等 GitHub 专属引用
+          git push --force cnb 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+
+  release_sync:
+    if: inputs.sync_assets
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "${tag}" && "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ -z "${tag}" ]]; then
+            echo "No release tag (not a tag event and release_tag input empty); skip asset sync."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.tag.outputs.skip != 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Skip if GitHub release does not exist
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          if ! gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.tag.outputs.tag }} has no GitHub release; nothing to sync."
+            echo "skip=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install git-cnb
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          case "${arch}" in
+            x86_64|amd64) git_cnb_arch=amd64 ;;
+            aarch64|arm64) git_cnb_arch=arm64 ;;
+            *) echo "Unsupported architecture: ${arch}" >&2; exit 1 ;;
+          esac
+          bin_dir="${RUNNER_TEMP}/git-cnb-bin"
+          mkdir -p "${bin_dir}"
+          curl -fsSL \
+            "https://${CNB_DOMAIN}/looc/git-cnb/-/releases/latest/download/git-cnb_linux_${git_cnb_arch}" \
+            -o "${bin_dir}/git-cnb"
+          chmod +x "${bin_dir}/git-cnb"
+          echo "${bin_dir}" >> "$GITHUB_PATH"
+          "${bin_dir}/git-cnb" --domain "${CNB_DOMAIN}" --repo "${CNB_REPO_SLUG}" version
+
+      - name: Ensure tag exists on CNB
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        env:
+          CNB_TOKEN: ${{ secrets.cnb_token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          git remote add cnb "https://cnb:${CNB_TOKEN}@${CNB_DOMAIN}/${CNB_REPO_SLUG}.git"
+          if git ls-remote --exit-code --tags cnb "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already on CNB."
+          else
+            git fetch --tags --force origin
+            git push cnb "refs/tags/${tag}:refs/tags/${tag}"
+          fi
+
+      - name: Ensure CNB release exists (create with GitHub metadata if missing)
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        env:
+          CNB_TOKEN: ${{ secrets.cnb_token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          if git-cnb --domain "${CNB_DOMAIN}" --repo "${CNB_REPO_SLUG}" release get -t "${tag}" >/dev/null 2>&1; then
+            echo "CNB release ${tag} already exists; keeping existing metadata."
+            exit 0
+          fi
+          name="$(gh release view "${tag}" --json name,tagName --jq '.name // .tagName // ""')"
+          body="$(gh release view "${tag}" --json body --jq '.body // ""')"
+          pre="$(gh release view "${tag}" --json isPrerelease --jq '.isPrerelease')"
+          cmd=(git-cnb --domain "${CNB_DOMAIN}" --repo "${CNB_REPO_SLUG}" release create -t "${tag}" -n "${name}")
+          [[ -n "${body}" ]] && cmd+=(-b "${body}")
+          [[ "${pre}" == "true" ]] && cmd+=(--prerelease)
+          "${cmd[@]}"
+
+      - name: Upload release assets to CNB
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        env:
+          CNB_TOKEN: ${{ secrets.cnb_token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          rm -rf release-assets && mkdir -p release-assets
+          gh release download "${tag}" --dir release-assets --pattern "*"
+          shopt -s nullglob
+          files=(release-assets/*)
+          [[ "${#files[@]}" -gt 0 ]] || { echo "No assets to upload."; exit 0; }
+          for file in "${files[@]}"; do
+            echo "Uploading $(basename "${file}") to CNB release ${tag}..."
+            git-cnb --domain "${CNB_DOMAIN}" --repo "${CNB_REPO_SLUG}" \
+              release asset-upload -t "${tag}" -f "${file}"
+          done
