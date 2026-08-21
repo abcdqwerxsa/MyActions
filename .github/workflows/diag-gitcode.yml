@@ -6,33 +6,49 @@ on:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     env:
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+      SLUG_OWNER: weqwrwqrczxx
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Probe connectivity layers to gitcode.com
+      - name: Matrix-test push configs against fresh throwaway repos
         run: |
           set -uo pipefail
-          slug="weqwrwqrczxx/MyActions"
-          url="https://weqwrwqrczxx:${GITCODE_TOKEN}@gitcode.com/${slug}.git"
+          api="https://gitcode.com/api/v5"
 
-          echo "== [1] plain HTTPS GET / (read path) =="
-          timeout 20 curl -sS -o /dev/null -w "code=%{http_code} time=%{time_total}s\n" https://gitcode.com/ || echo "GET / TIMEOUT/FAIL"
+          mkrepo() {  # mkrepo <name> -> creates empty repo, echoes slug
+            curl -sS -X POST "$api/user/repos" \
+              -d "access_token=${GITCODE_TOKEN}" \
+              --data-urlencode "name=$1" \
+              -d "private=true" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("full_name") or d)'
+          }
+          rmrepo() { curl -sS -X DELETE "$api/repos/$1?access_token=${GITCODE_TOKEN}" -o /dev/null -w "cleanup $1: %{http_code}\n"; }
 
-          echo "== [2] git ls-remote authenticated (read) =="
-          timeout 30 git ls-remote "$url" 2>&1 | head -5; echo "ls-remote exit: $?"
+          try_push() {  # try_push <label> <slug> [git configs...]
+            local label="$1" slug="$2"; shift 2
+            local url="https://${SLUG_OWNER}:${GITCODE_TOKEN}@gitcode.com/${slug}.git"
+            for c in "$@"; do git config --global "$c"; done
+            local t0=$SECONDS
+            if timeout 150 git push --progress "$url" HEAD:refs/heads/main > /tmp/push.log 2>&1; then
+              echo "[$label] SUCCESS in $((SECONDS-t0))s"
+            else
+              echo "[$label] FAIL (exit $?) after $((SECONDS-t0))s"
+            fi
+            tail -3 /tmp/push.log | sed 's/^/    /'
+            for c in "$@"; do git config --global --unset "$c"; done
+          }
 
-          echo "== [3] git push one tiny ref with trace (write) =="
-          git config http.lowSpeedLimit 1000
-          git config http.lowSpeedTime 30
-          git update-ref refs/diag/probe "$(git rev-parse HEAD)"
-          timeout 120 env GIT_TRACE_CURL=1 git push "$url" refs/diag/probe:refs/diag/probe 2>&1 | tail -30
-          echo "push exit: $?"
+          echo "== variant A: default config =="
+          a="$(mkrepo diag-push-a)"; try_push A "$a"
 
-          echo "== [4] API write sanity: create+delete a draft-ish marker =="
-          timeout 20 curl -sS -H "Authorization: Bearer ${GITCODE_TOKEN}" \
-            "https://gitcode.com/api/v5/repos/${slug}" | head -c 200; echo
+          echo "== variant B: postBuffer 500MB (single non-chunked body) =="
+          b="$(mkrepo diag-push-b)"; try_push B "$b" "http.postBuffer 524288000"
+
+          echo "== variant C: HTTP/1.1 + postBuffer =="
+          c="$(mkrepo diag-push-c)"; try_push C "$c" "http.version HTTP/1.1" "http.postBuffer 524288000"
+
+          rmrepo "$a"; rmrepo "$b"; rmrepo "$c"
