@@ -1,0 +1,19 @@
+name: Sync to CNB
+
+# MyActions 自身的 CNB 同步（也是 sync-to-cnb.yml 的端到端示例）。
+# 本仓库调用走本地路径；其他仓库用 abcdqwerxsa/MyActions/.github/workflows/sync-to-cnb.yml@main。
+
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    uses: ./.github/workflows/sync-to-cnb.yml
+    with:
+      cnb_repo: nilpotenter/MyActions
+    secrets:
+      cnb_token: ${{ secrets.CNB_TOKEN }}
