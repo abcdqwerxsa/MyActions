@@ -1,4 +1,4 @@
-name: Sync to CNB
+name: CNB Sync Engine (reusable)
 
 # 通用 GitHub → CNB(cnb.cool) 同步：整个仓库(分支+标签) + Release 制品。
 # 参考 TencentCloud/CubeSandbox 的 sync-to-cnb.yml，做了通用化裁剪：
