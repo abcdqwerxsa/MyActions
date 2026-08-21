@@ -1,0 +1,38 @@
+name: Diag GitCode Push
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Probe connectivity layers to gitcode.com
+        run: |
+          set -uo pipefail
+          slug="weqwrwqrczxx/MyActions"
+          url="https://weqwrwqrczxx:${GITCODE_TOKEN}@gitcode.com/${slug}.git"
+
+          echo "== [1] plain HTTPS GET / (read path) =="
+          timeout 20 curl -sS -o /dev/null -w "code=%{http_code} time=%{time_total}s\n" https://gitcode.com/ || echo "GET / TIMEOUT/FAIL"
+
+          echo "== [2] git ls-remote authenticated (read) =="
+          timeout 30 git ls-remote "$url" 2>&1 | head -5; echo "ls-remote exit: $?"
+
+          echo "== [3] git push one tiny ref with trace (write) =="
+          git config http.lowSpeedLimit 1000
+          git config http.lowSpeedTime 30
+          git update-ref refs/diag/probe "$(git rev-parse HEAD)"
+          timeout 120 env GIT_TRACE_CURL=1 git push "$url" refs/diag/probe:refs/diag/probe 2>&1 | tail -30
+          echo "push exit: $?"
+
+          echo "== [4] API write sanity: create+delete a draft-ish marker =="
+          timeout 20 curl -sS -H "Authorization: Bearer ${GITCODE_TOKEN}" \
+            "https://gitcode.com/api/v5/repos/${slug}" | head -c 200; echo
