@@ -6,7 +6,7 @@ on:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
       SLUG_OWNER: weqwrwqrczxx
@@ -15,46 +15,48 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push matrix with fixed config passing
+      - name: API upload path + long-patience git push
         run: |
-          set +e  # runner forces bash -e; we handle errors explicitly
+          set +e
           api="https://gitcode.com/api/v5"
+          slug="${SLUG_OWNER}/diag-api-up"
 
-          mkrepo() {
-            curl -sS -X POST "$api/user/repos" \
-              -d "access_token=${GITCODE_TOKEN}" \
-              --data-urlencode "name=$1" \
-              -d "private=true" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("full_name") or d)'
-          }
-          rmrepo() { curl -sS -X DELETE "$api/repos/$1?access_token=${GITCODE_TOKEN}" -o /dev/null -w "cleanup $1: %{http_code}\n"; }
+          echo "== [A1] create test repo + release =="
+          curl -sS -X POST "$api/user/repos" -d "access_token=${GITCODE_TOKEN}" \
+            --data-urlencode "name=diag-api-up" -d "private=false" | head -c 120; echo
+          curl -sS -X POST "$api/repos/${slug}/releases" \
+            -d "access_token=${GITCODE_TOKEN}" -d "tag_name=diag" \
+            --data-urlencode "name=diag" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("release id:", d.get("id")); sys.exit(0 if d.get("id") else 1)'
+          rid=$(curl -sS "$api/repos/${slug}/releases/tags/diag?access_token=${GITCODE_TOKEN}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
-          # push_from <label> <slug> <workdir> [key val ...]
-          push_from() {
-            local label="$1" slug="$2" wd="$3"; shift 3
-            local url="https://${SLUG_OWNER}:${GITCODE_TOKEN}@gitcode.com/${slug}.git"
-            while [[ $# -gt 0 ]]; do git -C "$wd" config "$1" "$2"; shift 2; done
-            local t0=$SECONDS
-            ( cd "$wd" && timeout 150 git push --progress "$url" HEAD:refs/heads/main ) > /tmp/push.log 2>&1
-            local rc=$?
-            echo "[$label] exit=$rc elapsed=$((SECONDS-t0))s"
-            tr '\r' '\n' < /tmp/push.log | grep -vE "^\s*$" | tail -4 | sed 's/^/    /'
-          }
+          echo "== [A2] small asset (170B) via attach_files =="
+          echo "small test $(date -Is)" > /tmp/small.bin
+          t0=$SECONDS
+          timeout 60 curl -sS -X POST "$api/repos/${slug}/releases/${rid}/attach_files" \
+            -F "access_token=${GITCODE_TOKEN}" -F "file=@/tmp/small.bin" | head -c 300; echo
+          echo "[A2] elapsed=$((SECONDS-t0))s"
 
-          echo "git version: $(git --version)"
+          echo "== [A3] big asset (12MB) via attach_files =="
+          head -c 12M /dev/urandom > /tmp/big.bin
+          t0=$SECONDS
+          timeout 240 curl -sS -X POST "$api/repos/${slug}/releases/${rid}/attach_files" \
+            -F "access_token=${GITCODE_TOKEN}" -F "file=@/tmp/big.bin" -o /tmp/big-resp.json -w "http=%{http_code} uploaded=%{size_upload}B speed=%{speed_upload}B/s\n"
+          echo "[A3] elapsed=$((SECONDS-t0))s"; head -c 300 /tmp/big-resp.json; echo
 
-          echo "== [T] tiny repo (1 file, default config) =="
-          mkdir -p /tmp/tiny && cd /tmp/tiny && git init -q -b main . && git config user.email t@t && git config user.name t
-          echo hello > f.txt && git add . && git commit -qm tiny
-          t="$(mkrepo diag-push-t)"; echo "tiny repo slug: $t"
-          push_from T "$t" /tmp/tiny
+          echo "== [L] git push patience test (420s) =="
+          git config http.version HTTP/1.1
+          git config http.postBuffer 524288000
+          url="https://${SLUG_OWNER}:${GITCODE_TOKEN}@gitcode.com/${slug}.git"
+          git update-ref refs/heads/testmain "$(git rev-parse HEAD)"
+          t0=$SECONDS
+          timeout 420 git push --progress "$url" refs/heads/testmain:refs/heads/main > /tmp/push.log 2>&1
+          rc=$?
+          echo "[L] exit=$rc elapsed=$((SECONDS-t0))s"
+          tr '\r' '\n' < /tmp/push.log | grep -vE "^\s*$" | tail -4 | sed 's/^/    /'
 
-          echo "== [B] full repo + postBuffer 500MB =="
-          b="$(mkrepo diag-push-b)"; echo "repo slug: $b"
-          push_from B "$b" "$GITHUB_WORKSPACE" http.postBuffer 524288000
-
-          echo "== [C] full repo + HTTP/1.1 + postBuffer =="
-          c="$(mkrepo diag-push-c)"; echo "repo slug: $c"
-          push_from C "$c" "$GITHUB_WORKSPACE" http.version HTTP/1.1 http.postBuffer 524288000
-
-          rmrepo "$t"; rmrepo "$b"; rmrepo "$c"
+          echo "== cleanup =="
+          curl -sS -X DELETE "$api/repos/${slug}?access_token=${GITCODE_TOKEN}" -o /dev/null -w "rm repo: %{http_code}\n"
+          for r in diag-push-t diag-push-b diag-push-c diag-push-a; do
+            curl -sS -X DELETE "$api/repos/${SLUG_OWNER}/${r}?access_token=${GITCODE_TOKEN}" -o /dev/null -w "rm $r: %{http_code}\n"
+          done
           echo DONE
