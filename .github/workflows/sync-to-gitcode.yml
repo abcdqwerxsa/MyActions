@@ -1,0 +1,174 @@
+name: Sync to GitCode
+
+# 通用 GitHub → gitcode.com 同步：整个仓库(分支+标签) + Release 制品。
+# GitCode API 为 Gitee 风格 /api/v5（access_token 表单认证），纯 curl 实现，
+# 无 CLI 依赖。与 sync-to-cnb.yml 平级，结构对应，调用方式一致。
+#
+# 在任意仓库中使用（caller workflow）：
+#   name: Sync to GitCode
+#   on:
+#     push:
+#       branches: [main]
+#       tags: ['*']
+#     release:
+#       types: [published]
+#   jobs:
+#     sync:
+#       uses: abcdqwerxsa/MyActions/.github/workflows/sync-to-gitcode.yml@main
+#       secrets:
+#         gitcode_token: ${{ secrets.GITCODE_TOKEN }}
+#
+# 前置条件：
+#   1. 在 gitcode.com 创建同名仓库（或用 gitcode_repo 指定目标 slug）
+#   2. 源仓库配好 Secret GITCODE_TOKEN（gitcode.com → 设置 → 个人访问令牌）
+#
+# 注意：release 附件单文件大小受平台限制（文件上传接口文档标注 20M 级别），
+# 超大制品失败时先查平台限制。
+
+on:
+  workflow_call:
+    inputs:
+      gitcode_repo:
+        description: "GitCode 目标仓库 slug（默认与 GitHub 仓库同名，如 owner/repo）"
+        type: string
+        default: ''
+      sync_git:
+        description: "同步整个仓库（全部分支 + 标签到 GitCode）"
+        type: boolean
+        default: true
+      sync_assets:
+        description: "同步 Release 制品（名称/正文 + 附件）"
+        type: boolean
+        default: true
+      release_tag:
+        description: "要同步的 release 标签（默认从 refs/tags/ 事件自动推断）"
+        type: string
+        default: ''
+
+    secrets:
+      gitcode_token:
+        description: "GitCode 个人访问令牌"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-to-gitcode-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GITCODE_API: https://gitcode.com/api/v5
+  GITCODE_SLUG: ${{ inputs.gitcode_repo || github.repository }}
+
+jobs:
+  git_sync:
+    if: inputs.sync_git
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push all branches and tags to GitCode
+        env:
+          GITCODE_TOKEN: ${{ secrets.gitcode_token }}
+        run: |
+          set -euo pipefail
+          owner="${GITCODE_SLUG%%/*}"
+          git remote add gitcode "https://${owner}:${GITCODE_TOKEN}@gitcode.com/${GITCODE_SLUG}.git"
+          git push --force gitcode 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+
+  release_sync:
+    if: inputs.sync_assets
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITCODE_TOKEN: ${{ secrets.gitcode_token }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.release_tag }}"
+          if [[ -z "${tag}" && "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ -z "${tag}" ]]; then
+            echo "No release tag (not a tag event and release_tag input empty); skip asset sync."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.tag.outputs.skip != 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Skip if GitHub release does not exist
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          if ! gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.tag.outputs.tag }} has no GitHub release; nothing to sync."
+            echo "skip=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Ensure tag exists on GitCode
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          owner="${GITCODE_SLUG%%/*}"
+          git remote add gitcode "https://${owner}:${GITCODE_TOKEN}@gitcode.com/${GITCODE_SLUG}.git"
+          if git ls-remote --exit-code --tags gitcode "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already on GitCode."
+          else
+            git fetch --tags --force origin
+            git push gitcode "refs/tags/${tag}:refs/tags/${tag}"
+          fi
+
+      - name: Ensure GitCode release exists (create with GitHub metadata if missing)
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          if curl -fsS "${GITCODE_API}/repos/${GITCODE_SLUG}/releases/tags/${tag}?access_token=${GITCODE_TOKEN}" >/dev/null; then
+            echo "GitCode release ${tag} already exists; keeping existing metadata."
+            exit 0
+          fi
+          name="$(gh release view "${tag}" --json name,tagName --jq '.name // .tagName // ""')"
+          body="$(gh release view "${tag}" --json body --jq '.body // ""')"
+          pre="$(gh release view "${tag}" --json isPrerelease --jq '.isPrerelease')"
+          curl -fsS -X POST "${GITCODE_API}/repos/${GITCODE_SLUG}/releases" \
+            -d "access_token=${GITCODE_TOKEN}" \
+            -d "tag_name=${tag}" \
+            --data-urlencode "name=${name}" \
+            --data-urlencode "body=${body}" \
+            -d "prerelease=${pre}" \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print("created release id:", d.get("id") or d); d.get("id") or sys.exit(1)'
+
+      - name: Upload release assets to GitCode
+        if: steps.tag.outputs.skip != 'true' && env.skip != 'true'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          rid="$(curl -fsS "${GITCODE_API}/repos/${GITCODE_SLUG}/releases/tags/${tag}?access_token=${GITCODE_TOKEN}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          existing="$(curl -fsS "${GITCODE_API}/repos/${GITCODE_SLUG}/releases/${rid}/attach_files?access_token=${GITCODE_TOKEN}" | python3 -c 'import json,sys; print("\n".join(a.get("name","") for a in json.load(sys.stdin)))' || true)"
+          rm -rf release-assets && mkdir -p release-assets
+          gh release download "${tag}" --dir release-assets --pattern "*"
+          shopt -s nullglob
+          files=(release-assets/*)
+          [[ "${#files[@]}" -gt 0 ]] || { echo "No assets to upload."; exit 0; }
+          for file in "${files[@]}"; do
+            base="$(basename "${file}")"
+            if grep -qxF "${base}" <<<"${existing}"; then
+              echo "Skip ${base} (already attached)."
+              continue
+            fi
+            echo "Uploading ${base} to GitCode release ${tag}..."
+            curl -fsS -X POST "${GITCODE_API}/repos/${GITCODE_SLUG}/releases/${rid}/attach_files" \
+              -F "access_token=${GITCODE_TOKEN}" \
+              -F "file=@${file}" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print("  ->", d.get("browser_download_url") or d)'
+          done

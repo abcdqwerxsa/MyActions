@@ -183,3 +183,40 @@ jobs:
 | `release_tag` | 自动推断 | 手动指定要同步的 release 标签（补传旧版本时用） |
 
 行为要点：仓库镜像与制品同步幂等可重跑；CNB 已存在的 release 保留原元数据不覆盖；同一 ref 的并发运行自动排队。
+
+## Sync to GitCode（仓库 / Release 制品同步到 GitCode）
+
+与 Sync to CNB 平级的可复用工作流，把任意 GitHub 仓库的**全部分支 + 标签**和 **Release 制品**（名称、正文、预发布标记、附件）同步到 [gitcode.com](https://gitcode.com)。
+
+与 CNB 版的差异：GitCode 的 API 是 Gitee 风格 `/api/v5`（`access_token` 表单认证），**纯 curl 实现，无 CLI 依赖**。附件上传按文件名去重，重跑安全（幂等）。
+
+### 1. 前置条件
+
+| 项目 | 说明 |
+|------|------|
+| GitCode 仓库 | 在 gitcode.com 建好目标仓库（slug 默认与 GitHub 同名，不同名用 `gitcode_repo` 指定） |
+| Secret | 源仓库配 `GITCODE_TOKEN`（gitcode.com → 个人设置 → 访问令牌，需推送/制品权限） |
+
+### 2. 在源仓库添加调用工作流
+
+`.github/workflows/sync-to-gitcode.yml`：
+
+```yaml
+name: Sync to GitCode
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    uses: abcdqwerxsa/MyActions/.github/workflows/sync-to-gitcode.yml@main
+    secrets:
+      gitcode_token: ${{ secrets.GITCODE_TOKEN }}
+```
+
+inputs 与 CNB 版一致（`gitcode_repo` / `sync_git` / `sync_assets` / `release_tag`），详见 `sync-to-gitcode.yml` 文件头注释。
+
+> 附件单文件大小受平台限制（文件上传接口文档为 20M 量级），超大制品失败先查平台限制。
