@@ -1,0 +1,67 @@
+name: Diag GitCode Presigned
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+      OWNER: weqwrwqrczxx
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Presigned PUT upload + patient git push
+        run: |
+          set +e
+          api="https://api.gitcode.com/api/v5"
+          slug="${OWNER}/diag-presign"
+          H="PRIVATE-TOKEN: ${GITCODE_TOKEN}"
+
+          echo "== [P0] create repo + seed tiny commit (release needs a ref) =="
+          curl -sS -X POST "https://gitcode.com/api/v5/user/repos" \
+            -d "access_token=${GITCODE_TOKEN}" --data-urlencode "name=diag-presign" \
+            -d "private=false" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("repo:", d.get("full_name") or d)'
+          mkdir -p /tmp/tiny && cd /tmp/tiny && git init -q -b master . \
+            && git config user.email t@t && git config user.name t \
+            && echo seed > f.txt && git add . && git commit -qm seed
+          timeout 60 git push "https://${OWNER}:${GITCODE_TOKEN}@gitcode.com/${slug}.git" master:master 2>&1 | tail -1
+
+          echo "== [P1] create release =="
+          curl -sS -X POST "$api/repos/${slug}/releases" -H "$H" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            -d '{"tag_name":"diag","target_commitish":"master","name":"diag","body":"diag","release_status":"latest"}' \
+            | head -c 200; echo
+
+          echo "== [P2] presigned upload 12MB (nvdacn mechanism) =="
+          head -c 12M /dev/urandom > big.bin
+          INFO=$(curl -sS -H "$H" -H "Accept: application/json" \
+            "$api/repos/${slug}/releases/diag/upload_url?file_name=big.bin")
+          echo "presign info: $(echo "$INFO" | head -c 300)"
+          URL=$(echo "$INFO" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("url",""))')
+          if [[ -n "$URL" ]]; then
+            t0=$SECONDS
+            timeout 240 curl -X PUT -T big.bin -w "http=%{http_code} uploaded=%{size_upload}B speed=%{speed_upload}B/s\n" "$URL"
+            echo "[P2] elapsed=$((SECONDS-t0))s"
+          else
+            echo "[P2] no presigned url returned"
+          fi
+
+          echo "== [P3] patient git push full repo (420s, fresh target) =="
+          cd "$GITHUB_WORKSPACE"
+          git config http.version HTTP/1.1
+          git config http.postBuffer 524288000
+          t0=$SECONDS
+          timeout 420 git push --progress "https://${OWNER}:${GITCODE_TOKEN}@gitcode.com/${slug}.git" \
+            HEAD:refs/heads/fullrepo > /tmp/push.log 2>&1
+          rc=$?
+          echo "[P3] exit=$rc elapsed=$((SECONDS-t0))s"
+          tr '\r' '\n' < /tmp/push.log | grep -vE "^\s*$" | tail -4 | sed 's/^/    /'
+
+          echo "== cleanup =="
+          curl -sS -X DELETE "https://gitcode.com/api/v5/repos/${slug}?access_token=${GITCODE_TOKEN}" -o /dev/null -w "rm: %{http_code}\n"
+          echo DONE
