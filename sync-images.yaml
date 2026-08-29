@@ -14,15 +14,13 @@
 
 images:
   # 对象写法
-  - source: registry.k8s.io/kueue/kueue:v0.19.0
+  - source: paradedb/paradedb:v0.22.2-pg17
   # kube-rbac-proxy v0.8.0 已无公开源（GCR 仓库已清空，quay.io/brancz 仅剩 master 滚动 tag），暂跳过
   # - source: gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0
-  - source: docker.io/mpioperator/mpi-operator:0.8.2
-  - source: docker.io/mpioperator/kubectl-delivery:v0.2.3
-    target: mpi-kubectl                # 保持原目标仓库名（源换为 kubectl-delivery）
-  - source: docker.io/rancher/local-path-provisioner:v0.0.37
-  - source: docker.io/mpioperator/mpich:v0.8.2
-    target: mpich-ubuntu               # 保持原目标仓库名（源换为 mpioperator/mpich）
+  - source: redis:7.0-alpine
+  - source: wechatopenai/weknora-docreader:latest
+  - source: wechatopenai/weknora-ui:latest
+  - source: wechatopenai/weknora-app:latest
 
   # 纯字符串写法（等价于只写 source）
   # - hello-world:latest
