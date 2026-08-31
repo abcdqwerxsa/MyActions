@@ -13,14 +13,40 @@
 # 源镜像须为公开可拉取（沿用 --src-no-creds）。单条失败不会中断整批。
 
 images:
-  # 对象写法
-  - source: paradedb/paradedb:v0.22.2-pg17
-  # kube-rbac-proxy v0.8.0 已无公开源（GCR 仓库已清空，quay.io/brancz 仅剩 master 滚动 tag），暂跳过
-  # - source: gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0
-  - source: redis:7.0-alpine
-  - source: wechatopenai/weknora-docreader:latest
-  - source: wechatopenai/weknora-ui:latest
-  - source: wechatopenai/weknora-app:latest
+  - source: busybox:latest
+  - source: langgenius/dify-api:1.17.0
+  - source: langgenius/dify-web:1.17.0
+  - source: postgres:15-alpine
+  - source: mysql:8.0
+  - source: redis:6-alpine
+  - source: langgenius/dify-sandbox:0.2.15
+  - source: langgenius/dify-agent-local-sandbox:1.17.0
+  - source: langgenius/dify-plugin-daemon:0.6.10-local
+  - source: langgenius/dify-agent-backend:1.17.0
+  - source: ubuntu/squid:latest
+  - source: certbot/certbot
+  - source: nginx:latest
+  - source: semitechnologies/weaviate:1.27.0
+  - source: oceanbase/oceanbase-ce:4.3.5-lts
+  - source: oceanbase/seekdb:latest
+  - source: langgenius/qdrant:v1.8.3
+  - source: pgvector/pgvector:pg16
+  - source: vastdata/vastbase-vector
+  - source: tensorchord/pgvecto-rs:pg16-v0.3.0
+  - source: ghcr.io/chroma-core/chroma:0.5.20
+  - source: containers.intersystems.com/intersystems/iris-community:2025.3
+  - source: container-registry.oracle.com/database/free:latest
+  - source: quay.io/coreos/etcd:v3.5.5
+  - source: minio/minio:RELEASE.2023-03-20T20-16-18Z
+  - source: milvusdb/milvus:v2.6.3
+  - source: opensearchproject/opensearch:latest
+  - source: opensearchproject/opensearch-dashboards:latest
+  - source: opengauss/opengauss:7.0.0-RC1
+  - source: myscale/myscaledb:1.6.4
+  - source: matrixorigin/matrixone:2.1.1
+  - source: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+  - source: docker.elastic.co/kibana/kibana:8.14.3
+  - source: downloads.unstructured.io/unstructured-io/unstructured-api:latest
 
   # 纯字符串写法（等价于只写 source）
   # - hello-world:latest
