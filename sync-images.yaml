@@ -17,6 +17,7 @@ images:
   # Harbor v2.15.4 核心组件
   - source: docker.io/goharbor/harbor-core:v2.15.4
   - source: docker.io/goharbor/harbor-jobservice:v2.15.4
+  - source: docker.io/goharbor/registry-photon:v2.15.4
   - source: docker.io/goharbor/harbor-registryctl:v2.15.4
   - source: docker.io/goharbor/harbor-portal:v2.15.4
   - source: docker.io/goharbor/harbor-db:v2.15.4
