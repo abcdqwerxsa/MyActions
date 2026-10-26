@@ -40,8 +40,8 @@ VERSION=1.2.3,DEBUG=false
 |------|------|------|
 | — | `GITHUB_TOKEN` | 自动提供，GHCR 推送 |
 | Variable | `DOCKERHUB_NAMESPACE` | Docker Hub 命名空间 |
-| Variable | `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
-| Secret | `DOCKERHUB_TOKEN` | Docker Hub Access Token |
+| Variable | `DOCKERHUB_USERNAME` | Docker Hub 用户名（推送 & docker.io 源拉取防限流） |
+| Secret | `DOCKERHUB_TOKEN` | Docker Hub Access Token（推送 & docker.io 源拉取防限流） |
 | Variable | `TCR_USERNAME` | 腾讯云 TCR 用户名 |
 | Variable | `TCR_NAMESPACE` | 腾讯云 TCR 命名空间 |
 | Secret | `TCR_PASSWORD` | 腾讯云 TCR 密码 |
@@ -139,6 +139,7 @@ images:
 
 - **目标仓库**：整表唯一，由 `target_registry` 决定，文件里不写仓库。
 - **磁盘管理**：镜像多时，每条同步前检查可用磁盘，低于 `min_free_gb`（默认 `5` GB）会自动清理 runner 临时空间（dotnet/android/ghc/boost 等预装大目录 + docker prune + skopeo tmp）。
+- **防限流**：docker.io 源（含 `nginx:1.25` 这类短名）会用已配置的 Docker Hub 凭证登录拉取，避免匿名限流；其他源保持匿名。
 - **容错**：源须公开可拉取；单条失败不中断整批，全部跑完后若有失败才标记失败，并在 Summary 输出逐条状态表。
 - **支持的目标仓库**：Quay.io / 阿里云 ACR / 华为云 SWR / 腾讯云 CNB / Docker Hub / 腾讯云 TCR / GHCR（需在 Secrets/Variables 配好对应凭据，见 `SECRETS.md`；Quay 首次推送会自动建仓）。
 

@@ -10,7 +10,8 @@
 #        tag     覆盖目标标签 / retag（默认跟随源 tag）
 #                例如 source: nginx:1.25.3 + tag: stable → 拉 1.25.3，推 stable
 #
-# 源镜像须为公开可拉取（沿用 --src-no-creds）。单条失败不会中断整批。
+# 源镜像须为公开可拉取。docker.io 源会自动用已配置的 DOCKERHUB 凭证登录拉取
+# （规避匿名限流），其余 registry 源保持匿名。单条失败不会中断整批。
 
 images:
   # Harbor v2.15.4 核心组件

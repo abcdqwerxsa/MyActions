@@ -149,8 +149,20 @@ jobs:
           QUAY_PASS: ${{ secrets.QUAY_PASSWORD }}
           QUAY_NS: ${{ vars.QUAY_NAMESPACE }}
         run: |
-              # 不再需要源认证，强制使用 --src-no-creds
-              args=(--all --retry-times 3  --src-no-creds)
+              args=(--all --retry-times 3)
+              # docker.io 源用 Docker Hub 账号拉取规避匿名限流，其余源保持匿名。
+              # 判定与 skopeo 归一化一致：docker.io/ 前缀或无 registry 前缀（nginx、user/img）都归 Docker Hub
+              case "$SOURCE" in
+                docker.io/*) src_is_dh=true ;;
+                *.*/*|*:*/*|localhost/*) src_is_dh=false ;;
+                *) src_is_dh=true ;;
+              esac
+              if [ "$src_is_dh" = true ] && [ -n "$DOCKERHUB_USER" ] && [ -n "$DOCKERHUB_PASS" ]; then
+                args+=(--src-creds "$DOCKERHUB_USER:$DOCKERHUB_PASS")
+                echo ">>> Docker Hub 源：以账号登录拉取（规避匿名限流）"
+              else
+                args+=(--src-no-creds)
+              fi
 
               case "$REGISTRY" in
                 GHCR)
@@ -350,8 +362,21 @@ jobs:
               dest_tag="$tag_override"
             fi
 
+            # docker.io 源用 Docker Hub 账号拉取规避匿名限流，其余源保持匿名
+            local args=(--all --retry-times 3)
+            case "$src" in
+              docker.io/*) src_is_dh=true ;;
+              *.*/*|*:*/*|localhost/*) src_is_dh=false ;;
+              *) src_is_dh=true ;;
+            esac
+            if [ "$src_is_dh" = true ] && [ -n "$DOCKERHUB_USER" ] && [ -n "$DOCKERHUB_PASS" ]; then
+              args+=(--src-creds "$DOCKERHUB_USER:$DOCKERHUB_PASS")
+              echo ">>> Docker Hub 源：以账号登录拉取（规避匿名限流）"
+            else
+              args+=(--src-no-creds)
+            fi
+
             local dst
-            local args=(--all --retry-times 3 --src-no-creds)
             case "$REGISTRY" in
               GHCR)
                 dst="ghcr.io/$GHCR_OWNER/$target"

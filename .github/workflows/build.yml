@@ -264,6 +264,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 基础镜像（FROM docker.io/...）拉取走账号认证，规避 Docker Hub 匿名限流；
+      # buildx 会把 docker config 里的凭证转发给 buildkit 用于拉取基础镜像
+      - name: Login to Docker Hub (base image pulls)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push (${{ matrix.arch }})
         uses: docker/build-push-action@v6
         with:
