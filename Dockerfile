@@ -1,116 +1,77 @@
-ARG NODE_IMAGE=docker.io/library/node:24-alpine
-ARG RUNTIME_IMAGE=docker.io/library/node:24-alpine
+# syntax=docker/dockerfile:1
+# Ubuntu 24.04 + XFCE4 + Xvfb + voxl browser desktop — single-file build
+# voxl: https://github.com/tembo/voxl  (MIT; binary links x264 -> GPL)
+#
+# build:  docker build -t voxl-desktop .
+# run:    docker run -d --name voxl-desktop -p 6901:6901 --shm-size=1g \
+#           -e VOXL_PASSWORD=你的密码 -v voxl-home:/home/dev voxl-desktop
+# open:   http://localhost:6901/?token=你的密码
 
-FROM ${NODE_IMAGE} AS build
+# ---------- build stage: compile voxl from crates.io ----------
+FROM ubuntu:24.04 AS build
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's|//archive.ubuntu.com|//mirrors.aliyun.com|; s|//security.ubuntu.com|//mirrors.aliyun.com|' /etc/apt/sources.list.d/ubuntu.sources \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      build-essential clang pkg-config curl ca-certificates git \
+      libx264-dev libyuv-dev libopus-dev libpulse-dev esbuild \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH=/root/.cargo/bin:$PATH
+RUN mkdir -p /root/.cargo && printf '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n' > /root/.cargo/config.toml \
+ && cargo install voxl-server
 
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
-ARG NO_PROXY
+# ---------- runtime stage ----------
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's|//archive.ubuntu.com|//mirrors.aliyun.com|; s|//security.ubuntu.com|//mirrors.aliyun.com|' /etc/apt/sources.list.d/ubuntu.sources \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      xfce4 xfce4-terminal dbus-x11 \
+      xvfb x11-xserver-utils \
+      pulseaudio pulseaudio-utils \
+      libx264-164 libyuv0 libopus0 \
+      fonts-dejavu fonts-noto-cjk \
+      git curl vim sudo build-essential python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -s /bin/bash dev \
+    && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev \
+    && chmod 440 /etc/sudoers.d/dev
+COPY --from=build /root/.cargo/bin/voxl /usr/local/bin/voxl
 
-ENV HTTP_PROXY=${HTTP_PROXY}
-ENV HTTPS_PROXY=${HTTPS_PROXY}
-ENV http_proxy=${http_proxy}
-ENV https_proxy=${https_proxy}
-ENV no_proxy=${no_proxy}
-ENV NO_PROXY=${NO_PROXY}
-ENV CI=true
+COPY <<'EOF' /usr/local/bin/entrypoint.sh
+#!/bin/sh
+# Xvfb + XFCE4 + voxl
+set -u
 
-RUN apk add --no-cache python3 make g++
+Xvfb "$DISPLAY" -screen 0 "$RES" -nolisten tcp -shmem &
+until xset -q >/dev/null 2>&1; do sleep 0.2; done
 
-WORKDIR /app
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY scripts/postinstall.mjs ./scripts/postinstall.mjs
-COPY packages ./packages
-COPY tools ./tools
-COPY apps/daemon/package.json ./apps/daemon/package.json
-COPY apps/web/package.json ./apps/web/package.json
-COPY e2e/package.json ./e2e/package.json
-RUN corepack enable && \
-    corepack prepare pnpm@10.33.2 --activate && \
-    pnpm install --frozen-lockfile
+# compositing off: cheaper capture, no tearing in the stream
+mkdir -p "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+cat > "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml" <<'XEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+  </property>
+</channel>
+XEOF
 
-COPY apps ./apps
-RUN pnpm --filter @open-design/daemon build && \
-    pnpm --filter @open-design/web build && \
-    pnpm --filter @open-design/daemon deploy --legacy --prod /app/deploy/daemon && \
-    pnpm store prune && \
-    rm -rf \
-      /root/.cache \
-      /root/.local/share/pnpm/store \
-      /app/deploy/daemon/node_modules/.cache \
-      /app/deploy/daemon/node_modules/@types \
-      /app/deploy/daemon/node_modules/.pnpm/@types+* \
-      /app/deploy/daemon/node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/deps \
-      /app/deploy/daemon/node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/src && \
-    find /app/deploy/daemon/node_modules -type d \( \
-      -name test -o \
-      -name tests -o \
-      -name "__tests__" -o \
-      -name docs -o \
-      -name doc -o \
-      -name example -o \
-      -name examples -o \
-      -name ".github" \
-    \) -prune -exec rm -rf '{}' + && \
-    find /app/deploy/daemon/node_modules -type f \( \
-      -name "*.md" -o \
-      -name "*.markdown" -o \
-      -name "*.d.ts" -o \
-      -name "*.d.cts" -o \
-      -name "*.d.mts" -o \
-      -name "*.map" -o \
-      -name "*.tsbuildinfo" -o \
-      -name "binding.gyp" \
-    \) -delete
+# audio: pulseaudio with a null sink so voxl has a monitor source
+export XDG_RUNTIME_DIR="/tmp/xdg-runtime"
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || true
+pactl load-module module-null-sink sink_name=voxl >/dev/null 2>&1 || true
 
-# Stage-2 assets — copied into the build stage so the runtime stage
-# can pull them via --from=build instead of reaching back into the
-# build context.  This lets the Dockerfile work when the build context
-# differs from the repo root (Railway, CI runners with a subdirectory
-# context, etc.).
-COPY skills ./skills
-COPY design-systems ./design-systems
-COPY craft ./craft
-COPY prompt-templates ./prompt-templates
-COPY assets ./assets
-COPY plugins/_official ./plugins/_official
+startxfce4 >/tmp/xfce.log 2>&1 &
 
-FROM ${RUNTIME_IMAGE}
+exec voxl --addr 0.0.0.0 --port "$PORT" --title "Dev Desktop" $VOXL_ARGS
+EOF
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/voxl
 
-RUN apk add --no-cache tini poppler-utils bash git && \
-    npm install -g opencode-ai && \
-    addgroup -S -g 1001 open-design && \
-    adduser -S -D -H -u 1001 -G open-design open-design
-
-WORKDIR /app
-COPY --from=build --chown=open-design:open-design /app/deploy/daemon ./apps/daemon
-COPY --from=build --chown=open-design:open-design /app/apps/web/out ./apps/web/out
-COPY --from=build --chown=open-design:open-design /app/skills ./skills
-COPY --from=build --chown=open-design:open-design /app/design-systems ./design-systems
-COPY --from=build --chown=open-design:open-design /app/craft ./craft
-COPY --from=build --chown=open-design:open-design /app/prompt-templates ./prompt-templates
-COPY --from=build --chown=open-design:open-design /app/assets/frames ./assets/frames
-COPY --from=build --chown=open-design:open-design /app/assets/community-pets ./assets/community-pets
-# Plan §3.J4 / spec §23.3.5 — bundled atom plugins registered on
-# daemon boot. The directory contains `plugins/_official/atoms/<atom>/`
-# pairs (SKILL.md + open-design.json); registerBundledPlugins() walks
-# it on startup so the container ships with first-party atoms reachable
-# via the same registry path third-party plugins use.
-COPY --from=build --chown=open-design:open-design /app/plugins/_official ./plugins/_official
-
-RUN mkdir -p /app/.od && \
-    chown -R open-design:open-design /app
-
-ENV NODE_ENV=production
-ENV NODE_OPTIONS=--max-old-space-size=192
-ENV OD_BIND_HOST=0.0.0.0
-ENV OD_PORT=7456
-
-EXPOSE 7456
-
-USER open-design
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "apps/daemon/dist/cli.js", "--no-open"]
+USER dev
+WORKDIR /home/dev
+ENV DISPLAY=:1 RES=1920x1080x24 PORT=6901
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+  CMD curl -sf "http://localhost:${PORT}/healthz" || exit 1
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
