@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN sed -i 's|//archive.ubuntu.com|//mirrors.aliyun.com|; s|//security.ubuntu.com|//mirrors.aliyun.com|' /etc/apt/sources.list.d/ubuntu.sources \
  && apt-get update && apt-get install -y --no-install-recommends \
       build-essential clang pkg-config curl ca-certificates git \
-      libx264-dev libyuv-dev libopus-dev libpulse-dev esbuild \
+      libx264-dev libyuv-dev libopus-dev libpulse-dev libxcb1-dev esbuild \
     && rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_DIST_SERVER=https://rsproxy.cn RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
